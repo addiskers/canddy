@@ -23,6 +23,7 @@ from plivo_handler import PlivoMediaBridge
 
 import dialer
 import directory
+import inbound_context
 import pricing
 import scheduler
 import store
@@ -108,12 +109,14 @@ live_watchers: set = set()
 _pending_call_meta: dict = {}
 
 
-def _remember_call_meta(call_uuid, caller, gen, origin, name="", campaign_id=""):
+def _remember_call_meta(call_uuid, caller, gen, origin, name="", campaign_id="",
+                        direction="", trigger=""):
     if not call_uuid:
         return
     _pending_call_meta[call_uuid] = {
         "caller": caller or "", "gen": gen or "", "origin": origin or "",
         "name": name or "", "campaign_id": campaign_id or "",
+        "direction": direction or "", "trigger": trigger or "",
     }
     if len(_pending_call_meta) > 200:                 # bound memory; drop oldest
         for k in list(_pending_call_meta)[:50]:
@@ -131,6 +134,13 @@ def _resolve_identity(call_id, header_caller, header_name):
     caller = header_caller or meta.get("caller") or ""
     name = header_name or meta.get("name") or directory.first_name_for(caller)
     return caller, name
+
+
+def _resolve_trigger(call_id):
+    """Per-call opening trigger stashed at /plivo/answer time (inbound call-backs:
+    'thanks for calling back — I tried reaching you a little while ago…').
+    Returns '' for ordinary outbound calls, which keep their default triggers."""
+    return _pending_call_meta.get(call_id or "", {}).get("trigger") or ""
 
 app = FastAPI()
 
@@ -378,7 +388,23 @@ async def plivo_answer(request: Request):
     campaign_id = qp.get("campaign", "")
     # Stash by CallUUID: extraHeaders don't propagate on bidirectional streams.
     call_uuid = qp.get("CallUUID") or qp.get("callUUID") or qp.get("RequestUUID") or ""
-    _remember_call_meta(call_uuid, caller, gen, origin, name=name, campaign_id=campaign_id)
+    # Genuine inbound call — a member dialing OUR number back (usually after a missed
+    # call). Plivo sends Direction=inbound; the ?caller= param exists only on answer
+    # URLs WE built for outbound dials, so its absence confirms this isn't our leg.
+    direction = (qp.get("Direction") or qp.get("direction") or "").lower()
+    is_inbound = direction == "inbound" and not qp.get("caller")
+    trigger = ""
+    if is_inbound:
+        ctx = inbound_context.build(caller)
+        caller = ctx.get("phone") or caller
+        name = name or ctx.get("name") or ""
+        if ctx.get("campaign_id"):
+            campaign_id = str(ctx["campaign_id"])
+        trigger = ctx.get("trigger") or ""
+        logger.info(f"Inbound call from {caller}: named={'yes' if name else 'no'}, "
+                    f"campaign={campaign_id or '-'}")
+    _remember_call_meta(call_uuid, caller, gen, origin, name=name, campaign_id=campaign_id,
+                        direction="inbound" if is_inbound else "", trigger=trigger)
     hdr_pairs = []
     if caller:
         hdr_pairs.append(f"X-Caller={quote(caller)}")
@@ -437,7 +463,8 @@ async def plivo_media_stream(websocket: WebSocket):
             except (TypeError, ValueError):
                 campaign_id = None
             origin_call_id = meta.get("origin") or event.get("origin") or None
-            await recorder.open(source="plivo", call_sid=event.get("call_sid") or None,
+            source = "plivo_inbound" if meta.get("direction") == "inbound" else "plivo"
+            await recorder.open(source=source, call_sid=event.get("call_sid") or None,
                                 caller=caller, generation=generation, campaign_id=campaign_id,
                                 origin_call_id=origin_call_id)
         elif etype == "call_end":
@@ -459,6 +486,7 @@ async def plivo_media_stream(websocket: WebSocket):
         text_trigger="[The guest has just answered the call. You were NOT given their name, so do NOT ask 'is that…?' and never invent a name — just greet them warmly and give your invitation.]",
         on_event=broadcast_event,
         resolve_identity=_resolve_identity,
+        resolve_trigger=_resolve_trigger,
     )
 
     live.inc()                     # count this connected call toward MAX_LIVE_CALLS

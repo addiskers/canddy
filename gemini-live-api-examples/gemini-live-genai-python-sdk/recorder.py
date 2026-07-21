@@ -157,6 +157,7 @@ class CallRecorder:
                 asyncio.create_task(self._deferred_twilio_refresh(self.call["id"], self.call["call_sid"]))
 
             await self._backpropagate_to_origin()
+            await self._reconcile_inbound()
         except Exception as e:
             logger.warning(f"CallRecorder.close failed: {e}")
 
@@ -204,6 +205,37 @@ class CallRecorder:
                     logger.warning(f"back-prop: campaign contact update failed: {e}")
         except Exception as e:
             logger.warning(f"back-prop failed: {e}")
+
+    async def _reconcile_inbound(self):
+        """If this call was INBOUND (the member called US back) and captured an RSVP:
+        roll the outcome onto their campaign contact so pending auto-retries stop, and
+        cancel any pending member-requested callback for this phone — the scheduler
+        must never re-dial someone we just spoke to. Idempotent; never raises."""
+        try:
+            if (self.call or {}).get("source") != "plivo_inbound":
+                return
+            outcome = self.call.get("rsvp_outcome_status")
+            caller = (self.call.get("caller") or "").strip()
+            if not outcome or not caller:
+                return
+            cid = self.call.get("campaign_id")
+            if cid:
+                try:
+                    import eo_db
+                    # "callback"/"voicemail" are not final answers — leave retries alive for those.
+                    eo_db.cc_set_outcome_by_phone(
+                        int(cid), caller, outcome,
+                        mark_done=outcome not in ("callback", "voicemail"),
+                        remark=(self.call.get("remark") or self.call.get("rsvp_note") or None))
+                except Exception as e:
+                    logger.warning(f"inbound reconcile: campaign contact update failed: {e}")
+            try:
+                await store.cancel_pending_callbacks_for_phone(
+                    caller, exclude_call_id=self.call.get("id"))
+            except Exception as e:
+                logger.warning(f"inbound reconcile: callback cancel failed: {e}")
+        except Exception as e:
+            logger.warning(f"inbound reconcile failed: {e}")
 
     # Internals
 

@@ -253,7 +253,7 @@ class PlivoMediaBridge:
     """Bridges a Plivo bidirectional Audio Stream WebSocket with a Gemini Live session."""
 
     def __init__(self, websocket, gemini_client, text_trigger, on_event=None,
-                 resolve_identity=None):
+                 resolve_identity=None, resolve_trigger=None):
         self.ws = websocket
         self.gemini = gemini_client
         self.stream_id = None
@@ -264,6 +264,9 @@ class PlivoMediaBridge:
         self.on_event = on_event  # async callback for live transcript
         # (call_id, header_caller, header_name) -> (caller, first_name); personalises the greeting even when Plivo drops extraHeaders.
         self.resolve_identity = resolve_identity
+        # call_id -> per-call opening trigger (inbound call-backs); '' keeps the defaults.
+        self.resolve_trigger = resolve_trigger
+        self._resolved_trigger = ""
 
         # Audio queue is BOUNDED (drop-oldest on overflow) so a stalled Gemini send can never buffer minutes of stale audio.
         self.audio_input_queue = asyncio.Queue(
@@ -583,6 +586,12 @@ class PlivoMediaBridge:
                         except Exception as e:
                             logger.warning(f"resolve_identity failed: {e}")
                     self.first_name = first_name or ""
+                    # Same pre-emit constraint for the per-call opening trigger (inbound call-backs).
+                    if self.resolve_trigger:
+                        try:
+                            self._resolved_trigger = self.resolve_trigger(self.call_id) or ""
+                        except Exception as e:
+                            logger.warning(f"resolve_trigger failed: {e}")
                     logger.info(f"Plivo stream started: stream_id={self.stream_id}, "
                                 f"call={self.call_id}, caller={self.caller}, "
                                 f"named={'yes' if first_name else 'no'}, gen={self.generation}")
@@ -595,7 +604,10 @@ class PlivoMediaBridge:
                         if not self._agent_audio_started:
                             self._connect_tone_task = asyncio.create_task(self._play_connect_tone())
                         # Opening trigger stays INSIDE the once-only guard: a duplicate Plivo `start` must NOT re-send it, or the agent re-reads its whole opening mid-call.
-                        if first_name:
+                        if self._resolved_trigger:
+                            # Per-call trigger (inbound call-back: "thanks for calling back…") replaces both defaults.
+                            trigger = self._resolved_trigger
+                        elif first_name:
                             trigger = (f"[The guest has just answered. Their first name is {first_name}. "
                                        f"Begin THE OPENING: your first turn is EXACTLY "
                                        f'"Hello! Am I speaking to {first_name}?" — say ONLY that, then STOP '

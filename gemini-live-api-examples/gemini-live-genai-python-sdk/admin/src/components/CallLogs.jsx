@@ -173,6 +173,7 @@ export default function CallLogs({ campaignId, title = 'Call Logs', showCampaign
           <select value={source} onChange={(e) => { setPage(0); setSource(e.target.value) }}>
             <option value="">All Sources</option>
             <option value="plivo">Plivo</option>
+            <option value="plivo_inbound">Phone (Inbound)</option>
             <option value="browser">Browser</option>
           </select>
         )}

@@ -347,6 +347,34 @@ async def list_callbacks(statuses=None):
     return active + terminal
 
 
+async def cancel_pending_callbacks_for_phone(phone, exclude_call_id=None):
+    """Cancel every PENDING callback whose destination matches `phone` (digit-normalized).
+    Used when the member calls US back — the scheduler must never re-dial someone we
+    just spoke to. `exclude_call_id` protects the current call's own freshly-scheduled
+    callback block (the member may have asked for a NEW callback on this very call).
+    Returns the number of callbacks cancelled."""
+    want = re.sub(r"\D", "", str(phone or ""))
+    if not want:
+        return 0
+    with _LOCK:
+        ids = [cid for cid, m in _INDEX.items()
+               if cid != exclude_call_id
+               and (m.get("callback") or {}).get("status") == "pending"
+               and re.sub(r"\D", "", str((m.get("callback") or {}).get("to") or "")) == want]
+    n = 0
+    for cid in ids:
+        call = await load_call(cid)
+        cb = (call or {}).get("callback") or {}
+        if cb.get("status") != "pending":
+            continue
+        cb["status"] = "cancelled"
+        cb["last_error"] = "member called us back"
+        await save_call(call)
+        n += 1
+        logger.info(f"Cancelled pending callback on {cid}: member called us back")
+    return n
+
+
 async def reset_orphaned_callbacks():
     """Boot recovery for callbacks the process claimed but never settled.
 

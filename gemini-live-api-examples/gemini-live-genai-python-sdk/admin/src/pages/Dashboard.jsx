@@ -50,7 +50,7 @@ export default function Dashboard() {
         <div className="card stat">
           <div className="label">Total Calls</div>
           <div className="value">{s ? s.total_calls : '—'}</div>
-          <div className="sub">Plivo {bySource.plivo || bySource.twilio || 0} · Browser {bySource.browser || 0}</div>
+          <div className="sub">Plivo {bySource.plivo || bySource.twilio || 0} · Inbound {bySource.plivo_inbound || 0} · Browser {bySource.browser || 0}</div>
         </div>
         <div className="card stat">
           <div className="label">Total Minutes</div>

@@ -578,6 +578,20 @@ def cc_set_outcome_by_phone(campaign_id: int, phone: str, outcome: str,
         return cur.rowcount
 
 
+def cc_find_recent_by_phone(phone: str) -> dict | None:
+    """Most-relevant campaign contact for a phone number — the inbound caller-ID
+    lookup ("who is calling us back, and what happened on our last attempt?").
+    Prefers a contact in an ACTIVE (scheduled/live) campaign, then the most recent
+    row overall. Returns the contact joined with its campaign's name/status."""
+    return _one(
+        "SELECT cc.*, c.name AS campaign_name, c.status AS campaign_status "
+        "FROM campaign_contacts cc JOIN campaigns c ON c.id = cc.campaign_id "
+        "WHERE cc.phone = ? "
+        "ORDER BY (c.status IN ('scheduled','live')) DESC, cc.id DESC LIMIT 1",
+        (str(phone),),
+    )
+
+
 # Campaigns: read helpers for call-log labelling
 def get_campaign(campaign_id: int) -> dict | None:
     return _one("SELECT * FROM campaigns WHERE id = ?", (int(campaign_id),))
