@@ -133,7 +133,7 @@ export default function CreateCampaign() {
           {err && <div className="err" style={{ marginBottom: 12 }}>{err}</div>}
           <div className="row">
             <label>Campaign Name</label>
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Varun Dhawan Evening — Batch 1" autoFocus />
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Power Couple Evening — Batch 1" autoFocus />
           </div>
           <div className="row">
             <label>Selected Contacts</label>

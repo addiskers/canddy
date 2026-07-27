@@ -186,7 +186,7 @@ function renderRSVP(result) {
     rsvpCard.classList.add("coming");
     rsvpEmoji.textContent = "🎉";
     rsvpTitle.textContent = rsvpData.guest_name ? `See you, ${rsvpData.guest_name}!` : "You're coming!";
-    rsvpSub.textContent = "We can't wait to see you on the 10th.";
+    rsvpSub.textContent = "We can't wait to see you on the 31st.";
   } else {
     rsvpCard.classList.add("declined");
     rsvpEmoji.textContent = "💛";
@@ -383,8 +383,8 @@ function showSessionEnd() {
 
   let badgeCls, badgeText, emoji, title, line;
   if (rsvpData && rsvpData.attending) {
-    badgeCls = "coming"; badgeText = "Coming on the 10th";
-    emoji = "🎉"; title = "See you on the 10th!";
+    badgeCls = "coming"; badgeText = "Coming on the 31st";
+    emoji = "🎉"; title = "See you on the 31st!";
     line = "We're so glad you're coming to the EO Gujarat evening.";
   } else if (rsvpData && !rsvpData.attending) {
     badgeCls = "declined"; badgeText = "Not this time";
