@@ -17,7 +17,7 @@ export default function Dashboard() {
   }, [])
 
   const bySource = s?.by_source || {}
-  const yesRate = s ? Math.round((s.booking_conversion_rate || 0) * 100) : 0
+  const yesRate = s ? Math.round(((s.unique_yes_rate ?? s.booking_conversion_rate) || 0) * 100) : 0
 
   return (
     <div className="stack">
@@ -60,7 +60,7 @@ export default function Dashboard() {
         <div className="card stat">
           <div className="label">RSVP Yes-Rate</div>
           <div className="value">{s ? `${yesRate}%` : '—'}</div>
-          <div className="sub">{s ? `${s.bookings || 0} coming` : ''}</div>
+          <div className="sub">{s ? `${(s.unique_yes ?? s.bookings) || 0} coming (Cumulative across all campaigns till date)` : ''}</div>
         </div>
       </div>
 

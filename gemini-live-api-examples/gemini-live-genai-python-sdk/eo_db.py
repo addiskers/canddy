@@ -427,6 +427,41 @@ def campaign_progress(campaign_id: int) -> dict:
     return {r["call_status"]: r["n"] for r in rows}
 
 
+def campaign_rsvp_yes_unique(campaign_id: int) -> int:
+    """Unique-by-phone Yes count for one campaign (repeat yes from the same number counts once)."""
+    r = _rows(
+        "SELECT COUNT(DISTINCT phone) n FROM campaign_contacts "
+        "WHERE campaign_id = ? AND rsvp_outcome = 'yes'",
+        (int(campaign_id),),
+    )
+    return int(r[0]["n"]) if r else 0
+
+
+def rsvp_yes_unique_totals(campaign_ids=None) -> dict:
+    """Dashboard rollup: unique-by-phone-within-each-campaign counts, summed across campaigns
+    (the same number in two campaigns counts once per campaign). campaign_ids=None → all campaigns."""
+    where, params = "", []
+    if campaign_ids is not None:
+        ids = [int(i) for i in campaign_ids]
+        if not ids:
+            return {"yes": 0, "responded": 0}
+        where = f" AND campaign_id IN ({','.join('?' * len(ids))})"
+        params = ids
+
+    def _count(cond: str) -> int:
+        r = _rows(
+            "SELECT COUNT(*) n FROM (SELECT campaign_id, phone FROM campaign_contacts "
+            f"WHERE {cond}{where} GROUP BY campaign_id, phone)",
+            tuple(params),
+        )
+        return int(r[0]["n"]) if r else 0
+
+    return {
+        "yes": _count("rsvp_outcome = 'yes'"),
+        "responded": _count("rsvp_outcome IS NOT NULL AND rsvp_outcome <> ''"),
+    }
+
+
 def get_campaign_full(campaign_id: int) -> dict | None:
     c = get_campaign(campaign_id)
     if not c:

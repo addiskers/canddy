@@ -323,7 +323,13 @@ async def eo_summary(request: Request):
     scope = _scope_ids(user)
     if scope is not None:
         filters["campaign_ids"] = scope
-    return JSONResponse(_strip_summary(await store.summary(filters), include_cost))
+    s = await store.summary(filters)
+    # Unique RSVP rollup: deduped by phone WITHIN each campaign, summed across campaigns.
+    uniq = eo_db.rsvp_yes_unique_totals(scope)
+    s["unique_yes"] = uniq["yes"]
+    s["unique_responded"] = uniq["responded"]
+    s["unique_yes_rate"] = round(uniq["yes"] / uniq["responded"], 4) if uniq["responded"] else 0.0
+    return JSONResponse(_strip_summary(s, include_cost))
 
 
 @router.get("/calls")
@@ -453,6 +459,7 @@ async def campaign_detail(campaign_id: int, request: Request):
     c = eo_db.get_campaign_full(campaign_id)
     if not c or not _owns_or_admin(user, c):
         raise HTTPException(status_code=404, detail="Campaign not found")
+    c["rsvp_yes_unique"] = eo_db.campaign_rsvp_yes_unique(campaign_id)
     return JSONResponse(c)
 
 
