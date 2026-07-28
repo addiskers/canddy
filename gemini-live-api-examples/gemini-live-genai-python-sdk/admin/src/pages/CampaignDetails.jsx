@@ -24,12 +24,10 @@ export default function CampaignDetails() {
   }
 
   const p = c?.progress || {}
-  const yesUnique = c?.rsvp_yes_unique || 0
-  const yesPct = c?.contact_count ? Math.round((yesUnique / c.contact_count) * 100) : 0
   const stat = [
     ['Total', c?.contact_count || 0],
     ['Pending', p.pending || 0],
-    ['RSVP Yes', yesUnique, `${yesPct}% of ${c?.contact_count || 0} (unique numbers)`],
+    ['RSVP Yes', c?.rsvp_yes_unique || 0],
     ['Done', p.done || 0],
     ['Failed', p.failed || 0],
     ['Cancelled', p.cancelled || 0],
@@ -55,11 +53,10 @@ export default function CampaignDetails() {
 
       {c && (
         <div className="grid stat-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))' }}>
-          {stat.map(([label, val, sub]) => (
+          {stat.map(([label, val]) => (
             <div className="card stat" key={label}>
               <div className="label">{label}</div>
               <div className="value" style={{ fontSize: '1.35rem' }}>{val}</div>
-              {sub && <div className="sub">{sub}</div>}
             </div>
           ))}
         </div>
