@@ -43,7 +43,7 @@ uv run main.py
 | What | Where |
 | --- | --- |
 | GvoxAi's persona / script | `SYSTEM_INSTRUCTION` in `gemini_live.py` |
-| Voice (default **Aoede**, female) | `voice_name=` in `gemini_live.py` (`start_session`) |
+| Voice (default **Aoede**, female) | `EO_VOICE_NAME` env (e.g. `Aoede`, `Kore`, `Leda`) — read in `gemini_live.py` `start_session` |
 | Accent / language (default **en-IN**) | `language_code=` in `gemini_live.py` |
 | Model id | `MODEL` in `.env` (default `gemini-3.1-flash-live-preview`) |
 | RSVP tool | `record_rsvp` in `gemini_live.py` (declaration) + `handle_record_rsvp` in `main.py` |

@@ -85,6 +85,17 @@ def test_looks_like_goodbye():
 def test_has_closing_repeat_detects_doubled_closing():
     assert _has_closing_repeat("see you on the tenth! ... see you on the tenth!") is True
     assert _has_closing_repeat("lovely, see you on the tenth then") is False
+    # Real failure: paraphrased double-invite with "count you in" / "sorry about that" twice
+    doubled = (
+        "Oh, sorry about that! Let me try again. We're hosting an evening with "
+        "Raghav Chadha. Can we count you in for that? Oh, sorry about that! Yes, "
+        "I was just calling from EO Gujarat. Can we count you in?"
+    )
+    assert _has_closing_repeat(doubled) is True
+    # 5-word verbatim run repeating inside one turn
+    assert _has_closing_repeat(
+        "can we count you in now can we count you in please"
+    ) is True
 
 
 # Goodbye playback: scheduling a hangup must not mute the farewell

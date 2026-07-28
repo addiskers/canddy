@@ -86,6 +86,8 @@ _CLOSING_MARKERS = (
     "drop all the details", "receive all the details", "details on the whatsapp",
     "details on your whatsapp", "on the whatsapp group",
     "anything else i can help", "look forward to seeing you",
+    # Real failure modes: paraphrased double-invite / double-apology in one turn.
+    "count you in", "sorry about that", "calling on behalf of", "calling from eo gujarat",
 )
 
 
@@ -94,13 +96,13 @@ def _has_closing_repeat(turn_text: str) -> bool:
     t = re.sub(r"\s+", " ", t).strip()
     if any(t.count(m) >= 2 for m in _CLOSING_MARKERS):
         return True
-    # General loop: any run of 6 consecutive words that appears twice in the same turn = spiralling.
+    # General loop: any run of 5 consecutive words that appears twice in the same turn = spiralling.
     words = t.split()
-    if len(words) < 12:
+    if len(words) < 10:
         return False
     seen = set()
-    for i in range(len(words) - 5):
-        g = " ".join(words[i:i + 6])
+    for i in range(len(words) - 4):
+        g = " ".join(words[i:i + 5])
         if g in seen:
             return True
         seen.add(g)
