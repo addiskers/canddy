@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import secrets
+import time
 from datetime import datetime, timezone
 from urllib.parse import quote, urlparse
 
@@ -117,6 +118,9 @@ def _remember_call_meta(call_uuid, caller, gen, origin, name="", campaign_id="",
         "caller": caller or "", "gen": gen or "", "origin": origin or "",
         "name": name or "", "campaign_id": campaign_id or "",
         "direction": direction or "", "trigger": trigger or "",
+        # answer-webhook receipt time: lets the media-stream start log the
+        # answer->stream delta (diagnoses slow Plivo webhook/WS round trips).
+        "answered_at": time.monotonic(),
     }
     if len(_pending_call_meta) > 200:                 # bound memory; drop oldest
         for k in list(_pending_call_meta)[:50]:
@@ -131,6 +135,10 @@ def _resolve_identity(call_id, header_caller, header_name):
     First name precedence: explicit per-call name > directory lookup by number.
     """
     meta = _pending_call_meta.get(call_id or "", {})
+    answered_at = meta.get("answered_at")
+    if answered_at:
+        logger.info(f"ANSWER-TO-STREAM: {time.monotonic() - answered_at:.2f}s from the "
+                    f"/plivo/answer webhook to media-stream start (call={call_id})")
     caller = header_caller or meta.get("caller") or ""
     name = header_name or meta.get("name") or directory.first_name_for(caller)
     return caller, name

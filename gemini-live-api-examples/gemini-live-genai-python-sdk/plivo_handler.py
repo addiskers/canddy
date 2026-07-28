@@ -33,6 +33,14 @@ try:
 except ImportError:          # pragma: no cover - starlette always ships with FastAPI
     WebSocketState = None
 
+# numpy makes the per-sample audio hot paths (mulaw<->PCM, energy, recording mix) ~50-100x
+# faster, which stops event-loop stalls from breaking the 20ms playout pacing on small VMs.
+# Every function keeps a pure-Python fallback so the bridge still works without it.
+try:
+    import numpy as _np
+except ImportError:          # pragma: no cover
+    _np = None
+
 logger = logging.getLogger(__name__)
 
 from gemini_live import _SILENT_SCHEDULING
@@ -152,6 +160,16 @@ def _pcm16_to_mulaw_sample(sample: int) -> int:
 
 def mulaw_to_pcm16k(mulaw_bytes: bytes) -> bytes:
     """Convert mulaw 8kHz (Plivo) -> PCM 16-bit 16kHz (Gemini input)."""
+    if not mulaw_bytes:
+        return b""
+    if _np is not None:
+        s8 = _MULAW_DECODE_NP[_np.frombuffer(mulaw_bytes, dtype=_np.uint8)]
+        # Upsample 8kHz -> 16kHz by linear interpolation (last sample duplicated)
+        mid = (s8.astype(_np.int32) + _np.append(s8[1:], s8[-1]).astype(_np.int32)) >> 1
+        out = _np.empty(s8.size * 2, dtype=_np.int16)
+        out[0::2] = s8
+        out[1::2] = mid.astype(_np.int16)
+        return out.tobytes()
     samples_8k = [_MULAW_DECODE[b] for b in mulaw_bytes]
     # Upsample 8kHz -> 16kHz by linear interpolation
     samples_16k = []
@@ -172,14 +190,22 @@ _PCM_TO_ULAW = bytes(
     _pcm16_to_mulaw_sample(_u - 65536 if _u >= 32768 else _u) for _u in range(65536)
 )
 
+# Vectorized copies of the lookup tables (built once at import; None without numpy).
+if _np is not None:
+    _MULAW_DECODE_NP = _np.array(_MULAW_DECODE, dtype=_np.int16)
+    _MULAW_SQ_NP = _np.array(_MULAW_SQ, dtype=_np.int64)
+    _PCM_TO_ULAW_NP = _np.frombuffer(_PCM_TO_ULAW, dtype=_np.uint8)
+
 
 def _mulaw_frame_meansquare(mulaw_bytes: bytes) -> float:
     """Cheap energy of one inbound mulaw frame (mean of squared PCM16 samples).
-    Pure-Python (table lookups only), no sqrt, no numpy/audioop — used as a
-    real-time voice-activity gate so silence/comfort-noise frames don't count as speech."""
+    Table lookups only (vectorized when numpy is available) — used as a real-time
+    voice-activity gate so silence/comfort-noise frames don't count as speech."""
     n = len(mulaw_bytes)
     if not n:
         return 0.0
+    if _np is not None:
+        return float(_MULAW_SQ_NP[_np.frombuffer(mulaw_bytes, dtype=_np.uint8)].mean())
     return sum(map(_MULAW_SQ.__getitem__, mulaw_bytes)) / n
 
 
@@ -187,8 +213,15 @@ def pcm24k_to_mulaw(pcm_bytes: bytes) -> bytes:
     """Convert PCM 16-bit 24kHz (Gemini output) -> mulaw 8kHz (Plivo). Downsample 3:1 with a cheap
     3-tap average (a low-pass) instead of naive decimation, so frequencies above 4kHz don't alias
     into a metallic/robotic tone — this also makes the agent's LIVE voice clearer to the caller."""
+    if _np is not None:
+        s = _np.frombuffer(pcm_bytes[:len(pcm_bytes) & ~1], dtype=_np.int16)
+        k = s.size // 3
+        if k == 0:
+            return b""
+        avg = s[:k * 3].astype(_np.int32).reshape(k, 3).sum(axis=1) // 3
+        return _PCM_TO_ULAW_NP[avg & 0xFFFF].tobytes()
     n_samples = len(pcm_bytes) // 2
-    samples = struct.unpack(f"<{n_samples}h", pcm_bytes)
+    samples = struct.unpack(f"<{n_samples}h", pcm_bytes[:n_samples * 2])
     lut = _PCM_TO_ULAW
     return bytes(lut[((samples[i] + samples[i + 1] + samples[i + 2]) // 3) & 0xFFFF]
                  for i in range(0, n_samples - 2, 3))
@@ -343,12 +376,25 @@ class PlivoMediaBridge:
             start = int((now - self._rec_t0) * 8000)
             if start > self._rec_max_samples:
                 return                            # cap runaway recordings
-            dec = _MULAW_DECODE
             buf = self._rec
             n = len(buf)
             if n < start:                         # silence gap since the last frame
                 buf.frombytes(bytes(2 * (start - n)))   # append (start-n) zero int16 samples
                 n = start
+            if _np is not None:
+                dec_np = _MULAW_DECODE_NP[_np.frombuffer(mulaw_bytes, dtype=_np.uint8)]
+                ov = min(n - start, len(dec_np)) if start < n else 0
+                if ov > 0:                        # overlap (barge-in) — AVERAGE (-6dB mix), no clip needed
+                    # .astype copies immediately, so no numpy view keeps buf's buffer exported
+                    # (a live export would make the frombytes append below raise BufferError).
+                    old = _np.frombuffer(buf, dtype=_np.int16, count=ov,
+                                         offset=start * 2).astype(_np.int32)
+                    mixed = (old + dec_np[:ov].astype(_np.int32)) >> 1
+                    buf[start:start + ov] = array.array("h", mixed.astype(_np.int16).tobytes())
+                if ov < len(dec_np):
+                    buf.frombytes(dec_np[ov:].tobytes())
+                return
+            dec = _MULAW_DECODE
             for i, b in enumerate(mulaw_bytes):
                 s = dec[b]
                 idx = start + i
@@ -470,11 +516,27 @@ class PlivoMediaBridge:
         errors (a single failure here used to silently mute the agent for the rest of the
         call). A transient error is logged and skipped; a closed socket — or a burst of
         consecutive failures — ends the task, which ends the bridge (run() waits on us)."""
+        # Jitter pre-buffer: at the start of each audio burst (after an idle gap), let a few
+        # frames accumulate before playout begins, so a hiccup in Gemini's streaming never
+        # becomes an audible mid-sentence gap. Barge-in still flushes instantly (clearAudio).
+        prebuf_frames = max(0, int(_env_float("EO_PREBUFFER_MS", 160) / (ULAW_FRAME_S * 1000)))
         next_t = None
         failures = 0
         try:
             while True:
-                frame = await self._out_frames.get()
+                if self._out_frames.empty():
+                    wait0 = time.monotonic()
+                    frame = await self._out_frames.get()
+                    # Only a REAL idle gap (>60ms) starts a new burst — the connect tone's
+                    # 20ms-paced frames and normal steady streaming never trigger this.
+                    if prebuf_frames > 1 and time.monotonic() - wait0 > 0.06:
+                        deadline = time.monotonic() + prebuf_frames * ULAW_FRAME_S
+                        while (self._out_frames.qsize() + 1 < prebuf_frames
+                               and time.monotonic() < deadline):
+                            await asyncio.sleep(0.01)
+                        next_t = None              # resync pacing after the idle gap
+                else:
+                    frame = await self._out_frames.get()
                 if not self.stream_id:
                     continue
                 try:
@@ -527,8 +589,19 @@ class PlivoMediaBridge:
             pass
 
     async def audio_interrupt_callback(self):
-        """Barge-in: drop queued agent audio + tell Plivo to flush its playout."""
+        """Barge-in: drop queued agent audio + tell Plivo to flush its playout.
+
+        Phantom-interrupt gate: Gemini's server VAD can fire `interrupted` off line echo
+        of the agent's own voice or background noise (especially with START_SENSITIVITY_HIGH).
+        Only honor the interrupt if OUR energy VAD saw voiced caller audio recently —
+        otherwise a phantom cuts the agent mid-word (heard as "voice breaking") and the
+        model then restarts its sentence (heard as a doubled line)."""
         if not self.stream_id:
+            return
+        confirm_s = _env_float("EO_INTERRUPT_CONFIRM_WINDOW_S", 0.4)
+        if confirm_s > 0 and (time.monotonic() - self._last_caller_audio) > confirm_s:
+            logger.info("Ignoring Gemini interrupt: no voiced caller audio in the last "
+                        f"{confirm_s:.1f}s (echo/noise phantom) — keeping playback")
             return
         self._drain_outbound()
         try:

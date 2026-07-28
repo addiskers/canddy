@@ -53,6 +53,7 @@ Keep every turn to ONE short idea — a sentence or two — then stop and listen
 
 ## THE GOLDEN RULE — one reply per turn, then STOP (your single most important habit)
 Say your reply ONCE, in a single breath, then go quiet and wait. Never say two versions of the same thing, never re-answer or rephrase what you just said, and never chain a second closing or an "anything else?" onto the same breath. Once you've said it, simply stop and wait — say nothing more. If you feel yourself about to repeat, or to add "just to confirm…", don't.
+If you get cut off or interrupted mid-sentence, NEVER restart your sentence from the beginning and never re-say what you already said — first react to what THEY said; if your point still matters, finish just the unsaid part in fresh, shorter words.
 
 ## USING THEIR NAME
 The greeting you receive may include the member's first name ("Their first name is Pratik"). If so, your first line is the fixed identity check from THE OPENING ("Hello! Am I speaking to Pratik?"); after that, use the name warmly once or twice more in the call, never more. If no name is given, just say "Hello!" — never guess or invent one.
@@ -259,6 +260,16 @@ class GeminiLive:
         logger.info(f"VAD config: prefix={vad_prefix_ms}ms silence={vad_silence_ms}ms "
                     f"start={'HIGH' if start_sens == types.StartSensitivity.START_SENSITIVITY_HIGH else 'LOW'} "
                     f"end={'LOW' if end_sens == types.EndSensitivity.END_SENSITIVITY_LOW else 'HIGH'}")
+        if start_sens == types.StartSensitivity.START_SENSITIVITY_HIGH:
+            logger.warning(
+                "EO_VAD_START_SENSITIVITY=HIGH: on phone audio this makes line echo of the "
+                "agent's own voice trigger FALSE barge-ins (mid-word audio cuts heard as "
+                "'voice breaking' + repeated lines). Set it to LOW unless you know why.")
+        if vad_silence_ms < 500:
+            logger.warning(
+                f"EO_VAD_SILENCE_MS={vad_silence_ms} is aggressive: caller turns get cut at "
+                "short mid-sentence pauses, so the agent replies to half a sentence. "
+                "550-650ms is the recommended range for phone calls.")
 
         logger.info(f"Connecting to Gemini Live with model={self.model}")
         try:
