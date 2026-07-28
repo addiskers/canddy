@@ -82,13 +82,19 @@ def _looks_like_goodbye(text: str) -> bool:
 
 # Within-turn repeat guard: stop feeding duplicate audio when a known closing marker is voiced twice or any verbatim phrase-run repeats inside one turn.
 _CLOSING_MARKERS = (
-    "see you on the", "so glad you", "we'll miss you", "we will miss you",
+    "see you on the", "see you on thirty", "so glad you", "so glad to have you",
+    "we'll miss you", "we will miss you",
     "drop all the details", "receive all the details", "details on the whatsapp",
     "details on your whatsapp", "on the whatsapp group",
     "anything else i can help", "look forward to seeing you",
     # Real failure modes: paraphrased double-invite / double-apology in one turn.
     "count you in", "sorry about that", "calling on behalf of", "calling from eo gujarat",
 )
+
+# Agent turn that ended with a question / RSVP re-ask — give the caller more thinking time before "are you still there?"
+_AGENT_QUESTION_RE = re.compile(
+    r"[?]|\b(count you in|can i count|shall i put|would you be able|"
+    r"are you (still )?there|can we count)\b", re.I)
 
 
 def _has_closing_repeat(turn_text: str) -> bool:
@@ -107,6 +113,14 @@ def _has_closing_repeat(turn_text: str) -> bool:
             return True
         seen.add(g)
     return False
+
+
+def _looks_like_agent_question(turn_text: str) -> bool:
+    """True if the agent's last turn asked something (RSVP re-ask or any '?')."""
+    t = (turn_text or "").strip()
+    if not t:
+        return False
+    return bool(_AGENT_QUESTION_RE.search(t))
 
 # Mulaw codec tables (ITU-T G.711)
 
@@ -345,6 +359,11 @@ class PlivoMediaBridge:
         self._greeting_sent_at = 0.0             # when the opening trigger was queued (0 = not yet)
         self._greeting_nudged = False            # the speak-NOW watchdog push was already sent
         self._reply_nudged = False               # missed-reply rescue sent for the current unanswered spell
+        # After an RSVP re-ask / question, give the caller more thinking time before the silence nudge.
+        self._last_agent_asked_question = False
+        # Soft-hangup once after RSVP + closing turn if the agent never called end_call (stops bare "Hello" re-engage).
+        self._post_rsvp_hangup_armed = False
+        self._post_rsvp_closing_done = False
         # Noise squelch (EO_NOISE_GATE, default OFF): below-gate frames are replaced by digital silence, NEVER dropped — the server VAD must hear the quiet to close a turn.
         self._gate_on = os.getenv("EO_NOISE_GATE", "false").strip().lower() in ("1", "true", "yes", "on")
         self._gate_thr = _env_float("EO_NOISE_GATE_RMS", 250) ** 2
@@ -590,6 +609,16 @@ class PlivoMediaBridge:
         except asyncio.QueueEmpty:
             pass
 
+    async def _flush_playout(self):
+        """Drop queued frames AND tell Plivo to clear already-buffered playout (barge-in / repeat cut)."""
+        self._drain_outbound()
+        if not self.stream_id:
+            return
+        try:
+            await self.ws.send_json({"event": "clearAudio", "streamId": self.stream_id})
+        except Exception:
+            pass
+
     async def audio_interrupt_callback(self):
         """Barge-in: drop queued agent audio + tell Plivo to flush its playout.
 
@@ -605,11 +634,7 @@ class PlivoMediaBridge:
             logger.info("Ignoring Gemini interrupt: no voiced caller audio in the last "
                         f"{confirm_s:.1f}s (echo/noise phantom) — keeping playback")
             return
-        self._drain_outbound()
-        try:
-            await self.ws.send_json({"event": "clearAudio", "streamId": self.stream_id})
-        except Exception:
-            pass
+        await self._flush_playout()
 
     # Inbound (Plivo -> Gemini)
 
@@ -857,6 +882,7 @@ class PlivoMediaBridge:
         dead_air = _cfg("EO_IDLE_HANGUP_SECONDS", 25.0)
         nudge_on = os.getenv("EO_SILENCE_CHECK", "true").strip().lower() not in ("0", "false", "no", "off")
         nudge_x = _cfg("EO_SILENCE_PROMPT_SECONDS", 6.0)
+        nudge_after_q = _cfg("EO_SILENCE_AFTER_QUESTION_SECONDS", 12.0)
         nudge_y = _cfg("EO_SILENCE_HANGUP_SECONDS", 10.0)
         nudge_max = int(_cfg("EO_SILENCE_NUDGE_MAX", 2))
         nudge_cooldown = _cfg("EO_SILENCE_NUDGE_COOLDOWN_S", 15.0)
@@ -904,7 +930,9 @@ class PlivoMediaBridge:
                         continue
                     quiet_for = now - max(self._last_caller_audio, self._last_agent_audio,
                                           self._last_activity)
-                    if (not self._silence_nudged and quiet_for >= nudge_x
+                    # After an RSVP re-ask, give the caller thinking time before "are you still there?"
+                    need_quiet = nudge_after_q if self._last_agent_asked_question else nudge_x
+                    if (not self._silence_nudged and quiet_for >= need_quiet
                             and self._silence_nudge_count < nudge_max
                             and (self._silence_nudge_at == 0.0
                                  or now - self._silence_nudge_at >= nudge_cooldown)):
@@ -914,7 +942,8 @@ class PlivoMediaBridge:
                         who = f"'{self.first_name}, are you still there? I can't hear you.'" \
                             if self.first_name else "'Hello — are you still there? I can't hear you.'"
                         logger.info(f"Quiet for {quiet_for:.0f}s; injecting are-you-still-there nudge "
-                                    f"({self._silence_nudge_count}/{nudge_max})")
+                                    f"({self._silence_nudge_count}/{nudge_max}"
+                                    f"{'; after-question' if self._last_agent_asked_question else ''})")
                         await self.text_input_queue.put(
                             f"[The line has gone quiet — warmly ask ONCE, {who} Then wait silently.]")
                         continue
@@ -1003,6 +1032,7 @@ class PlivoMediaBridge:
                     # Feed the idle-hangup guard: mark the task done + stamp any activity.
                     if etype == "tool_call" and event.get("name") == "record_rsvp":
                         self._rsvp_recorded = True
+                        self._post_rsvp_hangup_armed = True   # soft-end after the closing turn if no end_call
                         if _RSVP_SILENT:
                             # Silent RSVP can't double the closing; only risk is a MUTE record — nudge it to speak once.
                             if not self._spoke_since_user:
@@ -1019,14 +1049,29 @@ class PlivoMediaBridge:
                         self._last_activity = time.monotonic()
                     if etype == "user":
                         self._last_user_event = time.monotonic()
-                    # Within-turn repeat guard: if a closing phrase repeats inside ONE turn, drop the duplicate audio.
+                    # Within-turn repeat guard: if a closing phrase repeats inside ONE turn, drop the duplicate audio
+                    # AND flush already-queued playout (otherwise the second closing still reaches the caller).
                     if etype == "gemini":
                         self._turn_open = True           # a model turn is streaming (audio may lag the text)
                         self._turn_text += " " + (event.get("text") or "")
                         if not self._suppress_turn and _has_closing_repeat(self._turn_text):
                             self._suppress_turn = True
                             logger.info("Repeated closing mid-turn; suppressing duplicate audio")
+                            await self._flush_playout()
                     elif etype in ("turn_complete", "interrupted"):
+                        if etype == "turn_complete":
+                            self._last_agent_asked_question = _looks_like_agent_question(self._turn_text)
+                            # After RSVP, the next spoken turn is the closing — schedule hangup muted so a bare
+                            # "Hello" cannot re-engage (queued closing frames still drain; new turns are silent).
+                            if (self._post_rsvp_hangup_armed and not self._post_rsvp_closing_done
+                                    and self._spoke_since_user
+                                    and not (self._pending_hangup_task
+                                             and not self._pending_hangup_task.done())):
+                                self._post_rsvp_closing_done = True
+                                self._post_rsvp_hangup_armed = False
+                                logger.info("RSVP closing turn done; scheduling hangup "
+                                            "(agent did not call end_call)")
+                                self._schedule_end(mute=True)
                         self._turn_open = False
                         self._turn_text = ""
                         self._suppress_turn = False
@@ -1042,6 +1087,8 @@ class PlivoMediaBridge:
                             self._did_suppress_audio = False
                     if etype == "end_call":
                         logger.info("Agent requested end_call; will hang up after grace window")
+                        self._post_rsvp_hangup_armed = False
+                        self._post_rsvp_closing_done = True
                         self._schedule_end()
                         continue           # stay live during the grace window
                     # Caller asked to hold: keep the line open, cancel any pending hangup — deterministic, not a sign-off.

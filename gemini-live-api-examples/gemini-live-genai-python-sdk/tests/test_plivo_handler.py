@@ -9,7 +9,8 @@ import time
 import pytest
 
 import plivo_handler as ph
-from plivo_handler import (PlivoMediaBridge, _has_closing_repeat, _looks_like_goodbye,
+from plivo_handler import (PlivoMediaBridge, _has_closing_repeat, _looks_like_agent_question,
+                           _looks_like_goodbye,
                            _MULAW_DECODE, _MULAW_SQ, _PCM_TO_ULAW, _SILENCE_20MS_16K,
                            _mulaw_frame_meansquare, _pcm16_to_mulaw_sample, pcm24k_to_mulaw)
 
@@ -96,6 +97,85 @@ def test_has_closing_repeat_detects_doubled_closing():
     assert _has_closing_repeat(
         "can we count you in now can we count you in please"
     ) is True
+    # Live failure: two closings glued — "see you on thirty" / "so glad to have you"
+    live_double = (
+        "Oh wonderful so glad to have you there! You'll receive all the details "
+        "on your WhatsApp shortly. See you on thirty first Oh lovely! So glad "
+        "you'll be there. You'll receive all the details on your WhatsApp shortly. "
+        "See you on thirty first!"
+    )
+    assert _has_closing_repeat(live_double) is True
+
+
+def test_looks_like_agent_question():
+    assert _looks_like_agent_question("But could we still count you and your spouse in?") is True
+    assert _looks_like_agent_question("Would you be able to make it?") is True
+    assert _looks_like_agent_question("Oh wonderful, so glad you'll be there!") is False
+    assert _looks_like_agent_question("") is False
+
+
+def test_repeat_suppress_flushes_queued_playout():
+    """When a doubled closing is detected mid-turn, already-queued frames must be drained
+    and Plivo clearAudio sent — otherwise the second closing still plays."""
+    async def run():
+        ws = FakeWS()
+        b = _bridge(ws)
+        b.stream_id = "s1"
+        b._agent_audio_started = True
+        # Pretend a full closing is already queued for playout
+        for _ in range(5):
+            await b._out_frames.put(b"\xff" * 160)
+        b._residual.extend(b"\xaa" * 40)
+        # Drive the gemini-event path that arms suppress + flush
+        b._turn_text = ""
+        # Simulate accumulating the live doubled closing via gemini text events
+        event = {"type": "gemini", "text": (
+            "Oh wonderful so glad to have you there! You'll receive all the details "
+            "on your WhatsApp shortly. See you on thirty first Oh lovely! So glad "
+            "you'll be there. You'll receive all the details on your WhatsApp shortly. "
+            "See you on thirty first!"
+        )}
+        # Inline the same logic _gemini_loop uses for gemini events
+        b._turn_open = True
+        b._turn_text += " " + event["text"]
+        assert _has_closing_repeat(b._turn_text) is True
+        b._suppress_turn = True
+        await b._flush_playout()
+        assert b._out_frames.empty()
+        assert not b._residual
+        assert any(p.get("event") == "clearAudio" for p in ws.sent)
+        # Further audio while suppressed is dropped
+        await b.audio_output_callback(b"\x00\x10" * 240)
+        assert b._out_frames.empty() and not b._residual
+        return True
+    assert asyncio.run(run()) is True
+
+
+def test_post_rsvp_closing_schedules_muted_hangup():
+    """After record_rsvp + a spoken closing turn_complete, hang up muted so bare Hello can't re-engage."""
+    async def run():
+        b = _bridge()
+        b.stream_id = "s1"
+        b._agent_audio_started = True
+        b._rsvp_recorded = True
+        b._post_rsvp_hangup_armed = True
+        b._spoke_since_user = True
+        b._last_agent_audio = time.monotonic()
+        b._turn_text = "Oh wonderful, so glad you'll be there! See you on the thirty-first!"
+        # Mimic turn_complete branch
+        b._last_agent_asked_question = _looks_like_agent_question(b._turn_text)
+        assert b._last_agent_asked_question is False
+        if (b._post_rsvp_hangup_armed and not b._post_rsvp_closing_done
+                and b._spoke_since_user
+                and not (b._pending_hangup_task and not b._pending_hangup_task.done())):
+            b._post_rsvp_closing_done = True
+            b._post_rsvp_hangup_armed = False
+            b._schedule_end(mute=True)
+        assert b._ending is True
+        assert b._pending_hangup_task is not None
+        b._pending_hangup_task.cancel()
+        return True
+    assert asyncio.run(run()) is True
 
 
 # Goodbye playback: scheduling a hangup must not mute the farewell
