@@ -53,8 +53,8 @@ ANALYTICS_SECRET = os.getenv("ANALYTICS_SECRET", "eo2026")
 
 EVENT = {
     "host": "EO Gujarat",
-    "occasion": "Power Couple — a conversation with Raghav Chadha & Parineeti Chopra",
-    "date": "Friday, 31st July",
+    "occasion": "Spousal Forum Queen Bees — first spousal event of the year",
+    "date": "Saturday, 8th August",
     "city": "Ahmedabad",
 }
 

@@ -2,8 +2,8 @@
 
 A real-time **voice demo** built on the Gemini Live API ([Google Gen AI Python SDK](https://github.com/googleapis/python-genai)
 backend + vanilla-JS frontend). **GvoxAi**, an AI host with a warm female **Indian-English** voice,
-calls a guest and personally invites them to **"Power Couple" — an evening with Raghav Chadha &
-Parineeti Chopra in Ahmedabad on Friday, the 31st of July**. The guest answers **"Yes"** or **"No"** out loud; GvoxAi responds and her RSVP is captured
+calls a guest and personally invites their spouse to **the Spousal Forum's first spousal event of
+the year (hosted by the Queen Bees) in Ahmedabad on Saturday, the 8th of August**. The guest answers **"Yes"** or **"No"** out loud; GvoxAi responds and her RSVP is captured
 live on screen. Calls can run **in the browser** or be placed to a **real phone via Twilio**.
 
 The FastAPI backend proxies the browser/phone WebSocket to Gemini, records each call, and tracks
@@ -32,7 +32,7 @@ uv run main.py
 1. **Invite screen** — a branded EO Gujarat card. Click **Start the call** (browser), or enter a
    number and **Get GvoxAi to call your phone** (Twilio).
 2. **GvoxAi greets first** — on connect she opens with her invitation and asks if she'll see you on
-   the 31st.
+   the 8th.
 3. **You answer by voice** — GvoxAi replies warmly for *Yes* / graciously for *No*, and silently
    calls the `record_rsvp` tool.
 4. **Live RSVP card + transcript + a glowing "GvoxAi" orb** update in real time.
