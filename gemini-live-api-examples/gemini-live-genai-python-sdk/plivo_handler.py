@@ -359,6 +359,8 @@ class PlivoMediaBridge:
         self._greeting_sent_at = 0.0             # when the opening trigger was queued (0 = not yet)
         self._greeting_nudged = False            # the speak-NOW watchdog push was already sent
         self._reply_nudged = False               # missed-reply rescue sent for the current unanswered spell
+        self._any_turn_complete = False          # a model turn fully completed at least once this call
+        self._greeting_rescued = False           # once-per-call: opening re-sent after a pre-speech interrupt
         # After an RSVP re-ask / question, give the caller more thinking time before the silence nudge.
         self._last_agent_asked_question = False
         # Soft-hangup once after RSVP + closing turn if the agent never called end_call (stops bare "Hello" re-engage).
@@ -603,15 +605,20 @@ class PlivoMediaBridge:
 
     def _drain_outbound(self):
         self._residual.clear()
+        n = 0
         try:
             while True:
                 self._out_frames.get_nowait()
+                n += 1
         except asyncio.QueueEmpty:
             pass
+        return n
 
     async def _flush_playout(self):
         """Drop queued frames AND tell Plivo to clear already-buffered playout (barge-in / repeat cut)."""
-        self._drain_outbound()
+        dropped = self._drain_outbound()
+        if dropped:
+            logger.info(f"Barge-in: cleared {dropped} queued frames (agent audio flushed)")
         if not self.stream_id:
             return
         try:
@@ -635,6 +642,23 @@ class PlivoMediaBridge:
                         f"{confirm_s:.1f}s (echo/noise phantom) — keeping playback")
             return
         await self._flush_playout()
+
+    async def _maybe_rescue_greeting(self):
+        """Once per call: if an interrupt killed the opening before ANY evidence of a live
+        caller (no transcription event, no voiced frame), re-send the opening. Zero-evidence
+        only — a genuine barge-in, hold, or wrap-up must never re-greet."""
+        if (self._greeting_rescued or self._any_turn_complete or self._ending
+                or (self._pending_hangup_task and not self._pending_hangup_task.done())
+                or self._greeting_sent_at <= 0.0
+                or self._last_user_event > 0.0
+                or self._last_caller_audio > 0.0):
+            return
+        self._greeting_rescued = True
+        self._greeting_sent_at = time.monotonic()
+        logger.info("Greeting interrupted by noise before any caller speech; re-sending opening (once)")
+        await self.text_input_queue.put(
+            "[Line noise cut off your opening before the member heard it. "
+            "Say your opening line again now — just once, warmly.]")
 
     # Inbound (Plivo -> Gemini)
 
@@ -926,7 +950,9 @@ class PlivoMediaBridge:
                                     f"caller spoke; prompting it to reply")
                         await self.text_input_queue.put(
                             "[The member just said something and is waiting. If you caught it, "
-                            "reply NOW; if you did not catch it, politely ask them to repeat.]")
+                            "reply NOW; if you did not catch it, politely ask them to repeat. "
+                            "ONE short line only — never re-deliver something you already said; "
+                            "if a question of yours is still unanswered, just re-ask it briefly.]")
                         continue
                     quiet_for = now - max(self._last_caller_audio, self._last_agent_audio,
                                           self._last_activity)
@@ -1085,6 +1111,11 @@ class PlivoMediaBridge:
                         if etype == "interrupted" or self._did_suppress_audio:
                             self._suppress_post_record = False
                             self._did_suppress_audio = False
+                        # After the suppress flags reset (so the re-greet can't be muted by them):
+                        if etype == "turn_complete":
+                            self._any_turn_complete = True
+                        else:
+                            await self._maybe_rescue_greeting()
                     if etype == "end_call":
                         logger.info("Agent requested end_call; will hang up after grace window")
                         self._post_rsvp_hangup_armed = False

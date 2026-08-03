@@ -370,6 +370,37 @@ def test_greeting_watchdog_never_fires_after_audio_started(monkeypatch):
     assert asyncio.run(run()) == []
 
 
+def test_greeting_rescue_fires_once_for_noise_killed_opening():
+    async def run():
+        b = _bridge()
+        b._greeting_sent_at = time.monotonic() - 1    # opening queued, zero caller evidence yet
+        await b._maybe_rescue_greeting()
+        await b._maybe_rescue_greeting()              # a second interrupt: once-per-call guard holds
+        msgs = []
+        while not b.text_input_queue.empty():
+            msgs.append(b.text_input_queue.get_nowait())
+        return msgs
+
+    msgs = asyncio.run(run())
+    assert sum("Say your opening line again" in m for m in msgs) == 1
+
+
+def test_greeting_rescue_stays_quiet_for_real_speech_or_after_a_turn():
+    async def run():
+        results = []
+        for field, value in (("_last_user_event", time.monotonic()),
+                             ("_last_caller_audio", time.monotonic()),
+                             ("_any_turn_complete", True)):
+            b = _bridge()
+            b._greeting_sent_at = time.monotonic() - 1
+            setattr(b, field, value)
+            await b._maybe_rescue_greeting()
+            results.append(b.text_input_queue.empty())
+        return results
+
+    assert asyncio.run(run()) == [True, True, True]
+
+
 def test_missed_reply_rescue_fires_when_caller_speech_goes_unanswered(monkeypatch):
     """Caller spoke AFTER the agent's last audio and got nothing for 4s → prompt the
     agent once. The still-there ladder can't cover this (it measures silence, and a
