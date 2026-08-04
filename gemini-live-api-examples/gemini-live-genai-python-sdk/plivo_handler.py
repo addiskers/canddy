@@ -302,9 +302,10 @@ class PlivoMediaBridge:
     """Bridges a Plivo bidirectional Audio Stream WebSocket with a Gemini Live session."""
 
     def __init__(self, websocket, gemini_client, text_trigger, on_event=None,
-                 resolve_identity=None, resolve_trigger=None):
+                 resolve_identity=None, resolve_trigger=None, preopened=None):
         self.ws = websocket
         self.gemini = gemini_client
+        self._preopened = preopened   # pre-warmed Gemini session handle (or None → cold connect)
         self.stream_id = None
         self.call_id = ""
         self.caller = ""
@@ -1048,6 +1049,7 @@ class PlivoMediaBridge:
                 text_input_queue=self.text_input_queue,
                 audio_output_callback=self.audio_output_callback,
                 audio_interrupt_callback=self.audio_interrupt_callback,
+                preopened=self._preopened,
             ):
                 if event:
                     await self._emit(event)

@@ -109,6 +109,40 @@ live_watchers: set = set()
 # Metadata stashed at /plivo/answer keyed by CallUUID; Plivo drops <Stream extraHeaders> on bidirectional streams.
 _pending_call_meta: dict = {}
 
+# Gemini pre-warm: sessions opened at /plivo/answer time so the ~1s connect handshake
+# overlaps Plivo's stream setup instead of adding to the caller's opening dead air.
+# Claimed by /plivo/media-stream via the ?call= query param; TTL-closed if unused.
+_PREWARM_TTL_S = 20.0
+_prewarm_sessions: dict = {}
+
+
+def _claim_prewarm(call_uuid: str):
+    entry = _prewarm_sessions.pop(call_uuid or "", None)
+    if not entry:
+        return None
+    logger.info(f"Claimed pre-warmed Gemini session for call {call_uuid} "
+                f"(age {time.monotonic() - entry['at']:.1f}s)")
+    return entry["handle"]
+
+
+async def _prewarm_gemini(call_uuid: str):
+    g = GeminiLive(api_key=GEMINI_API_KEY, model=MODEL, input_sample_rate=16000)
+    try:
+        handle = await g.open_connection()
+    except Exception as e:
+        logger.warning(f"Gemini pre-warm failed for {call_uuid} (call will cold-connect): {e}")
+        return
+    _prewarm_sessions[call_uuid] = {"handle": handle, "at": time.monotonic()}
+    await asyncio.sleep(_PREWARM_TTL_S)
+    entry = _prewarm_sessions.pop(call_uuid, None)
+    if entry:                                   # media stream never arrived — don't leak the session
+        logger.info(f"Pre-warmed Gemini session for {call_uuid} unused after "
+                    f"{_PREWARM_TTL_S:.0f}s; closing")
+        try:
+            await entry["handle"].__aexit__(None, None, None)
+        except Exception:
+            pass
+
 
 def _remember_call_meta(call_uuid, caller, gen, origin, name="", campaign_id="",
                         direction="", trigger=""):
@@ -413,6 +447,10 @@ async def plivo_answer(request: Request):
                     f"campaign={campaign_id or '-'}")
     _remember_call_meta(call_uuid, caller, gen, origin, name=name, campaign_id=campaign_id,
                         direction="inbound" if is_inbound else "", trigger=trigger)
+    # Kick off the Gemini connect NOW and tag the stream URL so the WS handler can adopt it.
+    if call_uuid and GEMINI_API_KEY:
+        ws_url += f"?call={quote(call_uuid)}"
+        asyncio.create_task(_prewarm_gemini(call_uuid))
     hdr_pairs = []
     if caller:
         hdr_pairs.append(f"X-Caller={quote(caller)}")
@@ -442,6 +480,7 @@ async def plivo_media_stream(websocket: WebSocket):
     """WebSocket endpoint for Plivo bidirectional Audio Streaming."""
     await websocket.accept()
     logger.info("Plivo Media Stream WebSocket accepted")
+    preopened = _claim_prewarm(websocket.query_params.get("call") or "")
 
     gemini_client = GeminiLive(
         api_key=GEMINI_API_KEY,
@@ -495,6 +534,7 @@ async def plivo_media_stream(websocket: WebSocket):
         on_event=broadcast_event,
         resolve_identity=_resolve_identity,
         resolve_trigger=_resolve_trigger,
+        preopened=preopened,
     )
 
     live.inc()                     # count this connected call toward MAX_LIVE_CALLS

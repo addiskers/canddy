@@ -203,6 +203,21 @@ if _NONBLOCKING_BEHAVIOR is not None:
         if _t.get("name") == "record_rsvp":
             _t["behavior"] = _NONBLOCKING_BEHAVIOR
 
+class _PreopenedSession:
+    """A Live session whose connect handshake already happened (see GeminiLive.open_connection).
+    Quacks like the async context manager start_session expects: __aenter__ hands back the
+    already-open session; __aexit__ closes the underlying connection."""
+    def __init__(self, ctx, session):
+        self._ctx = ctx
+        self._session = session
+
+    async def __aenter__(self):
+        return self._session
+
+    async def __aexit__(self, *exc):
+        return await self._ctx.__aexit__(*exc)
+
+
 class GeminiLive:
     """
     Handles the interaction with the Gemini Live API.
@@ -225,8 +240,9 @@ class GeminiLive:
         self.tools = tools or [{"function_declarations": TOOLS}]
         self.tool_mapping = tool_mapping or {}
 
-    async def start_session(self, audio_input_queue, video_input_queue, text_input_queue, audio_output_callback, audio_interrupt_callback=None):
-        # Server-side VAD knobs, env-tunable; silence_duration_ms is the biggest lever on perceived reply latency.
+    def _build_config(self):
+        """LiveConnectConfig from env — shared by start_session and open_connection.
+        Server-side VAD knobs, env-tunable; silence_duration_ms is the biggest lever on perceived reply latency."""
         def _env_int(name, default):
             try:
                 return int(os.getenv(name, str(default)))
@@ -281,10 +297,29 @@ class GeminiLive:
                 f"EO_VAD_SILENCE_MS={vad_silence_ms} is aggressive: caller turns get cut at "
                 "short mid-sentence pauses, so the agent replies to half a sentence. "
                 "550-650ms is the recommended range for phone calls.")
+        return config
 
-        logger.info(f"Connecting to Gemini Live with model={self.model}")
+    async def open_connection(self):
+        """Pre-open a Live session (the ~1s network handshake) BEFORE the media stream
+        arrives, so the handshake overlaps the telephony setup instead of adding to the
+        caller's dead air. Pass the returned handle to start_session(preopened=...); if
+        it's never adopted, the owner must close it via handle.__aexit__(None, None, None)."""
+        config = self._build_config()
+        logger.info(f"Pre-connecting Gemini Live (model={self.model})")
+        ctx = self.client.aio.live.connect(model=self.model, config=config)
+        session = await ctx.__aenter__()
+        logger.info("Gemini Live session pre-opened")
+        return _PreopenedSession(ctx, session)
+
+    async def start_session(self, audio_input_queue, video_input_queue, text_input_queue, audio_output_callback, audio_interrupt_callback=None, preopened=None):
+        if preopened is not None:
+            cm = preopened
+            logger.info("Adopting pre-warmed Gemini Live session (connect handshake already done)")
+        else:
+            cm = self.client.aio.live.connect(model=self.model, config=self._build_config())
+            logger.info(f"Connecting to Gemini Live with model={self.model}")
         try:
-          async with self.client.aio.live.connect(model=self.model, config=config) as session:
+          async with cm as session:
             logger.info("Gemini Live session opened successfully")
 
             async def send_audio():
