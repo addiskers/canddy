@@ -15,7 +15,7 @@ export default function Scheduler() {
 
   return (
     <div className="stack">
-      <PageHeader title="Scheduler" sub="Member-requested callbacks and automatic no-answer retries" />
+      <PageHeader title="Scheduler" sub="Employee-requested callbacks and automatic no-answer retries" />
       {meta && meta.scheduler_enabled === false && (
         <div style={{
           background: 'var(--amber-soft)', color: 'var(--amber)',
@@ -31,7 +31,7 @@ export default function Scheduler() {
         </div>
       )}
       <Callbacks
-        title="User requested callbacks"
+        title="Employee requested callbacks"
         desc="Callbacks scheduled at the user's requested time"
         onEnabledChange={onEnabledChange}
       />

@@ -1,7 +1,7 @@
 services:
-  eo-radha:
+  tringtring:
     build: .
-    container_name: eo-radha
+    container_name: tringtring
     env_file:
       - .env
     environment:

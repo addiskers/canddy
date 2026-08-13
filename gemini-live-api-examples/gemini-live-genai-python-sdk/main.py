@@ -49,52 +49,77 @@ PLIVO_AUTH_TOKEN = os.getenv("PLIVO_AUTH_TOKEN")
 PLIVO_FROM_NUMBER = os.getenv("PLIVO_FROM_NUMBER", "")
 ANALYTICS_SECRET = os.getenv("ANALYTICS_SECRET", "eo2026")
 
-# Event / guest data
+# Case / screening data
 
-EVENT = {
-    "host": "EO Gujarat",
-    "occasion": "Spousal Forum Queen Bees — first spousal event of the year",
-    "date": "Saturday, 8th August",
-    "city": "Ahmedabad",
+CASE = {
+    "company": "Canny Management Services",
+    "client": "Baoxhin",
+    "incident_date": "Wednesday, 6th August 2026",
+    "subject": "collective work stoppage over the phone-storage requirement",
 }
 
-def handle_record_rsvp(**kwargs):
-    """The agent calls this once per call with the RSVP outcome."""
+def handle_record_interview(**kwargs):
+    """The agent calls this once per call with the interview outcome."""
     status = (kwargs.get("outcome_status") or "").strip().lower()
     note = (kwargs.get("note") or "").strip().lower()
     vm_markers = ("voicemail", "voice mail", "answering machine", "answer machine")
     if status not in ("yes", "no", "callback", "voicemail", "do_not_contact", "wrong_number"):
-        # Unknown status: voicemail wording maps to "voicemail"; legacy `attending` flag to "yes"; else "callback" (recoverable).
+        # Unknown status: voicemail wording maps to "voicemail"; an explicit refusal to "no"; else "callback" (recoverable).
         if any(m in status for m in vm_markers) or any(m in note for m in vm_markers):
             status = "voicemail"
         else:
-            status = "yes" if kwargs.get("attending") else "callback"
+            status = "no" if kwargs.get("refused_interview") else "callback"
     elif (status == "callback"
           and not (kwargs.get("callback_time_text") or "").strip()
           and not (kwargs.get("callback_time_iso") or "").strip()
           and any(m in note for m in vm_markers)):
-        # A "callback" with a voicemail note and no requested time is a machine answer, not a member request.
+        # A "callback" with a voicemail note and no requested time is a machine answer, not an employee request.
         status = "voicemail"
+    try:
+        questions_completed = max(0, min(20, int(kwargs.get("questions_completed") or 0)))
+    except (TypeError, ValueError):
+        questions_completed = 0
     result = {
         "success": True,
         "silent": True,
         "outcome_status": status,
-        "attending": status == "yes",
         "callback_time_text": kwargs.get("callback_time_text", "") or "",
         "callback_time_iso": kwargs.get("callback_time_iso", "") or "",
         "do_not_contact": status == "do_not_contact",
-        "accompanying_children": kwargs.get("accompanying_children", "") or "",
-        "guest_name": kwargs.get("guest_name", "") or "",
+        "employee_confirmed_identity": bool(kwargs.get("employee_confirmed_identity")),
+        "refused_interview": status == "no",
+        "preferred_language": (kwargs.get("preferred_language") or "").strip().lower(),
+        "questions_completed": questions_completed,
         "note": kwargs.get("note", "") or "",
-        "event": EVENT,
+        "case": CASE,
     }
-    # record_rsvp is a blocking tool, so its result prompts one turn; the conditional instruction guarantees exactly one closing.
+    # On SDKs without SILENT scheduling the tool result prompts one turn; the conditional instruction guarantees exactly one closing.
     result["instruction"] = ("SYSTEM NOTE — never voice any of this, and never mention recording or bookkeeping. "
-                             "The outcome is already saved. If you have said NOTHING to the member about this "
-                             "answer yet, speak your ONE brief closing now. If you have already replied at all, "
+                             "The outcome is already saved. If you have said NOTHING to the employee about "
+                             "closing yet, speak your ONE brief closing now. If you have already replied at all, "
                              "produce NO audio this turn — do not add to it, rephrase it, repeat it, acknowledge "
                              "anything, or give a second closing.")
     return result
+
+
+def handle_mark_question(**kwargs):
+    """Silent per-question progress bookkeeping; persistence happens in the recorder."""
+    try:
+        n = int(kwargs.get("question_number") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    status = (kwargs.get("status") or "").strip().lower()
+    if status not in ("answered", "partial", "declined", "dont_know", "skipped"):
+        status = "answered"
+    return {
+        "success": 1 <= n <= 20,
+        "silent": True,
+        "question_number": n,
+        "status": status,
+        "gist": (kwargs.get("gist") or "").strip(),
+        "instruction": ("SYSTEM NOTE — progress noted silently. Produce no audio because of this; "
+                        "simply continue the interview with your next spoken question."),
+    }
 
 
 def handle_end_call(**kwargs):
@@ -240,11 +265,16 @@ async def _startup():
         app.state.campaign_task = asyncio.create_task(campaign_runner.run_loop())
     except Exception as e:
         logger.error(f"Failed to start campaign runner: {e}")
+    try:
+        import assessment
+        app.state.assessment_task = asyncio.create_task(assessment.sweep_loop())
+    except Exception as e:
+        logger.error(f"Failed to start assessment sweep: {e}")
 
 
 @app.on_event("shutdown")
 async def _shutdown():
-    for attr in ("callback_task", "campaign_task"):
+    for attr in ("callback_task", "campaign_task", "assessment_task"):
         task = getattr(app.state, attr, None)
         if task:
             task.cancel()
@@ -258,6 +288,11 @@ async def _shutdown():
 
 @app.get("/")
 async def root():
+    # The browser test console opens an ungated voice session — keep it OFF in
+    # production (EO_DEMO_ENABLED=false redirects to the admin login).
+    if os.getenv("EO_DEMO_ENABLED", "false").strip().lower() not in ("1", "true", "yes", "on"):
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/admin/")
     return FileResponse("frontend/index.html")
 
 
@@ -292,7 +327,8 @@ async def websocket_endpoint(websocket: WebSocket):
         model=MODEL,
         input_sample_rate=16000,
         tool_mapping={
-            "record_rsvp": handle_record_rsvp,
+            "record_interview": handle_record_interview,
+            "mark_question": handle_mark_question,
             "end_call": handle_end_call,
         }
     )
@@ -487,7 +523,8 @@ async def plivo_media_stream(websocket: WebSocket):
         model=MODEL,
         input_sample_rate=16000,
         tool_mapping={
-            "record_rsvp": handle_record_rsvp,
+            "record_interview": handle_record_interview,
+            "mark_question": handle_mark_question,
             "end_call": handle_end_call,
         }
     )
@@ -530,7 +567,7 @@ async def plivo_media_stream(websocket: WebSocket):
     bridge = PlivoMediaBridge(
         websocket=websocket,
         gemini_client=gemini_client,
-        text_trigger="[The guest has just answered the call. You were NOT given their name, so do NOT ask 'is that…?' and never invent a name — just greet them warmly and give your invitation.]",
+        text_trigger="[The call has just been answered. You were NOT given the employee's name — never invent one. Greet in polite Hindi, say you are Tring Tring AI calling on behalf of Canny management, and ask who you are speaking with. Do NOT mention the incident, the 6th of August, or an interview until the right employee is confirmed on the line.]",
         on_event=broadcast_event,
         resolve_identity=_resolve_identity,
         resolve_trigger=_resolve_trigger,
@@ -561,9 +598,10 @@ async def call_me(request: Request):
     body = await request.json()
     to_number = body.get("phone")
     name = (body.get("name") or "").strip()
+    provider = (body.get("provider") or "").strip().lower() or None
     if not to_number:
         return {"error": "Missing 'phone' field. Send {\"phone\": \"+91XXXXXXXXXX\"}"}
-    return await dialer.place_call(to_number, request=request, name=name)
+    return await dialer.place_call(to_number, request=request, name=name, provider=provider)
 
 
 # Live transcript dashboard
@@ -595,7 +633,7 @@ LIVE_DASHBOARD_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>EO Gujarat · Live Transcript</title>
+<title>Tring Tring AI · Live Transcript</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -751,7 +789,7 @@ body::before {
 </head>
 <body>
 <div class="top-bar">
-  <span class="brand">EO Gujarat · Live Transcript</span>
+  <span class="brand">Tring Tring AI · Live Transcript</span>
   <div class="status">
     <span class="dot" id="statusDot"></span>
     <span id="statusText">Waiting for call...</span>
@@ -760,7 +798,7 @@ body::before {
 <div class="container">
   <div class="waiting" id="waiting">
     <h2>No active call</h2>
-    <p>Start a call using the "Call Me" button or dial +1 (978) 571-5824.<br>The transcript will appear here in real-time.</p>
+    <p>Start a call from the admin panel — the transcript appears here in real time.</p>
   </div>
   <div id="transcript"></div>
 </div>
@@ -1032,8 +1070,8 @@ tbody tr:hover{background:rgba(0,212,255,0.05);}
           <th data-k="duration_seconds" class="num">Duration</th>
           <th data-k="language">Lang</th>
           <th data-k="status">Status</th>
-          <th data-k="booking_created">Coming</th>
-          <th data-k="rsvp_outcome_status">RSVP</th>
+          <th data-k="booking_created">Completed</th>
+          <th data-k="rsvp_outcome_status">Outcome</th>
           <th data-k="gemini_cost_usd" class="num">Gemini $</th>
           <th data-k="twilio" class="num">Twilio $</th>
           <th data-k="total_cost_usd" class="num">Total $</th>
@@ -1164,7 +1202,7 @@ function renderStats(){
     {label:'Total real cost',value:fmtUSD(s.total_cost_usd),cls:'cy'},
     {label:'Avg cost / call',value:fmtUSD(s.avg_cost_per_call)},
     {label:'This month',value:fmtUSD2((s.this_month||{}).cost_usd),sub:'proj '+fmtUSD2(s.projected_month_cost)},
-    {label:'RSVP yes-rate',value:fmtPct(s.booking_conversion_rate),cls:'gr',sub:(s.bookings||0)+' coming'},
+    {label:'Completion rate',value:fmtPct(s.booking_conversion_rate),cls:'gr',sub:(s.bookings||0)+' completed'},
   ];
   $('stats').innerHTML=cards.map(c=>
     '<div class="stat '+(c.cls||'')+'"><div class="label">'+c.label+'</div><div class="value">'+c.value+'</div>'+

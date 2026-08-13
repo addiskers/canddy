@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { api } from '../api.js'
-import CallLogs, { fmtDate } from '../components/CallLogs.jsx'
+import CallLogs, { fmtDate, CallDrawer } from '../components/CallLogs.jsx'
 import CampaignRecipients from '../components/CampaignRecipients.jsx'
+import CampaignRanking from '../components/CampaignRanking.jsx'
 import PageHeader from '../components/PageHeader.jsx'
 import { minToHHMM } from './MyCampaigns.jsx'
 
@@ -10,12 +11,20 @@ export default function CampaignDetails() {
   const { id } = useParams()
   const [c, setC] = useState(null)
   const [err, setErr] = useState('')
+  const [rankStats, setRankStats] = useState(null)
+  const [detail, setDetail] = useState(null)
 
   async function load() {
     try { setC(await api.get(`/campaigns/${id}`)) }
     catch (e) { setErr(e.message) }
   }
   useEffect(() => { load() }, [id])
+
+  // Ranking rows open their call in the shared drawer (same idiom as CampaignRecipients).
+  async function openCall(callId) {
+    try { setDetail(await api.get(`/calls/${encodeURIComponent(callId)}`)) }
+    catch (e) { alert(e.message) }
+  }
 
   async function cancelCampaign() {
     if (!confirm(`Cancel campaign "${c.name}"?`)) return
@@ -27,7 +36,7 @@ export default function CampaignDetails() {
   const stat = [
     ['Total', c?.contact_count || 0],
     ['Pending', p.pending || 0],
-    ['RSVP Yes', c?.rsvp_yes_unique || 0],
+    ...(rankStats?.avgScore != null ? [['Avg Score', rankStats.avgScore]] : []),
     ['Done', p.done || 0],
     ['Failed', p.failed || 0],
     ['Cancelled', p.cancelled || 0],
@@ -72,7 +81,17 @@ export default function CampaignDetails() {
 
       <CampaignRecipients campaignId={id} />
 
+      <CampaignRanking campaignId={id} onOpenCall={openCall} onStats={setRankStats} />
+
       <CallLogs title="Campaign Call Logs" campaignId={id} showCampaignColumn={false} showSource={false} />
+
+      {detail && (
+        <CallDrawer
+          call={detail}
+          onClose={() => setDetail(null)}
+          onReload={() => openCall(detail.id || detail.call_sid)}
+        />
+      )}
     </div>
   )
 }

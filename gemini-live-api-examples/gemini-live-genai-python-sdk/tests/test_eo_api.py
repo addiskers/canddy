@@ -23,9 +23,10 @@ LIVE = {"status": "live", "call_start_min": 0, "call_end_min": 0}      # 0==0 �
 def test_display_matrix_core_states():
     assert eo_api._contact_display(_cc(call_status="calling")) == ("In progress", "blue")
     assert eo_api._contact_display(_cc(call_status="failed")) == ("Unreachable — max attempts", "red")
-    assert eo_api._contact_display(_cc(call_status="done", rsvp_outcome="yes")) == ("Attending", "green")
+    assert eo_api._contact_display(_cc(call_status="done", rsvp_outcome="yes")) == ("Interview completed", "green")
+    assert eo_api._contact_display(_cc(call_status="done", rsvp_outcome="no")) == ("Refused interview", "red")
     assert eo_api._contact_display(_cc(call_status="done", rsvp_outcome="voicemail")) == ("Voicemail", "amber")
-    assert eo_api._contact_display(_cc(call_status="done")) == ("Answered — no RSVP captured", "amber")
+    assert eo_api._contact_display(_cc(call_status="done")) == ("Answered — no outcome captured", "amber")
     assert eo_api._contact_display(_cc()) == ("Queued", "amber")
 
 
@@ -66,9 +67,14 @@ def test_callback_labels_cover_the_full_machine():
 
 def test_rsvp_labels_cover_every_tool_enum_value():
     import gemini_live
-    enum = gemini_live.TOOLS[0]["parameters"]["properties"]["outcome_status"]["enum"]
+    # Look the outcome tool up BY NAME — record_interview need not stay TOOLS[0]
+    tool = next(t for t in gemini_live.TOOLS if t["name"] == "record_interview")
+    enum = tool["parameters"]["properties"]["outcome_status"]["enum"]
     for value in enum:
         assert value in eo_api._RSVP_LABELS, f"missing display label for outcome '{value}'"
+    # yes/no carry the interview relabel (raw enums stay untouched internally)
+    assert eo_api._RSVP_LABELS["yes"] == ("Interview completed", "green")
+    assert eo_api._RSVP_LABELS["no"] == ("Refused interview", "red")
 
 
 def test_clean_remark_strips_and_caps():

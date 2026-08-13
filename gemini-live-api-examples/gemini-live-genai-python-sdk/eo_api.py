@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
+import assessment
 import callbacks
 import eo_auth
 import eo_db
@@ -126,6 +127,11 @@ def _strip_full(call: dict, include_cost: bool = False) -> dict:
         c.pop(k, None)
     if isinstance(c.get("summary"), dict):
         c["summary"] = {k: v for k, v in c["summary"].items() if k not in _SUMMARY_COST_KEYS}
+    if isinstance(c.get("assessment"), dict):
+        a = dict(c["assessment"])
+        a.pop("tokens", None)
+        a.pop("cost_usd", None)
+        c["assessment"] = a
     # normalise transcript key for the SPA (it reads `messages` or `transcript`)
     c.setdefault("messages", c.get("transcript") or [])
     cid = c.get("campaign_id")
@@ -152,8 +158,8 @@ def _owns_or_admin(user, campaign) -> bool:
 # Display statuses (labels only — raw enums stay for logic/actions)
 # variant maps to the SPA pill palette: green | blue | amber | red
 _RSVP_LABELS = {
-    "yes": ("Attending", "green"),
-    "no": ("Declined", "red"),
+    "yes": ("Interview completed", "green"),
+    "no": ("Refused interview", "red"),
     "callback": ("Callback requested", "amber"),
     "voicemail": ("Voicemail", "amber"),
     "do_not_contact": ("Do not contact", "red"),
@@ -192,7 +198,7 @@ def _contact_display(cc, campaign=None, scheduler_on=True, now=None, now_min=Non
             return _RSVP_LABELS[outcome]
         if outcome:
             return (str(outcome), "green")
-        return ("Answered — no RSVP captured", "amber")
+        return ("Answered — no outcome captured", "amber")
     # pending (and the legacy, never-written 'no_answer')
     if int(cc.get("attempts") or 0) == 0:
         return ("Queued", "amber")
@@ -298,8 +304,9 @@ async def users_create(request: Request):
     if len(password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
     role = body.get("role") if body.get("role") in ("eo_admin", "eo_agent") else "eo_agent"
+    provider = body.get("provider") if body.get("provider") in ("plivo", "enablex") else "plivo"
     h, s = eo_auth.hash_password(password)
-    uid = eo_db.create_user(username, (body.get("name") or "").strip(), h, s, role)
+    uid = eo_db.create_user(username, (body.get("name") or "").strip(), h, s, role, provider=provider)
     return {"ok": True, "id": uid}
 
 
@@ -311,6 +318,10 @@ async def users_update(user_id: int, request: Request):
         if int(user_id) == int(admin["id"]) and not body["active"]:
             raise HTTPException(status_code=400, detail="You cannot disable your own account")
         eo_db.set_user_active(int(user_id), bool(body["active"]))
+    if "provider" in body:
+        if body["provider"] not in ("plivo", "enablex"):
+            raise HTTPException(status_code=400, detail="Provider must be 'plivo' or 'enablex'")
+        eo_db.set_user_provider(int(user_id), body["provider"])
     return {"ok": True}
 
 
@@ -359,9 +370,12 @@ async def eo_calls_csv(request: Request):
     data = await store.list_calls(filters)
     items = _label_and_strip(data["items"], include_cost)
     buf = io.StringIO()
-    # Deliberately limited export columns — everything else is on the grid.
-    cols = ["contact_name", "caller", "started_at", "status", "rsvp_outcome_status", "duration_seconds", "remark"]
-    headers = ["Name", "Phone", "Date/Time", "Status", "RSVP", "Duration (s)", "Remark"]
+    # Deliberately limited export columns — full per-category scores live on the campaign ranking CSV.
+    cols = ["contact_name", "caller", "started_at", "status", "rsvp_outcome_status", "duration_seconds",
+            "assessment_score", "assessment_red_flag", "assessment_review_status",
+            "assessment_involvement", "assessment_status", "remark"]
+    headers = ["Name", "Phone", "Date/Time", "Status", "Outcome", "Duration (s)",
+               "Score /100", "Red flag", "Review status", "Involvement", "Assessment", "Remark"]
     w = csv.writer(buf)
     w.writerow(headers)
     for c in items:
@@ -873,3 +887,243 @@ async def eo_scheduler_toggle(request: Request):
     enabled = bool(body.get("enabled", not scheduler.is_enabled()))
     scheduler.set_override(enabled)
     return {"ok": True, "enabled": enabled}
+
+
+# Interview assessments (scoring pipeline in assessment.py)
+
+async def _owned_call(user, call_id: str) -> dict:
+    call = await store.load_call(call_id)
+    if not call:
+        raise HTTPException(status_code=404, detail="Call not found")
+    scope = _scope_ids(user)
+    if scope is not None and str(call.get("campaign_id") or "") not in scope:
+        raise HTTPException(status_code=404, detail="Call not found")
+    return call
+
+
+@router.post("/calls/{call_id}/assess")
+async def eo_call_assess(call_id: str, request: Request):
+    """Queue a (re-)score of one call. Re-scoring pushes the previous result onto
+    assessment.history; a management override survives only as history."""
+    user = eo_auth.require_eo(request)
+    call = await _owned_call(user, call_id)
+    if call.get("status") == "in_progress":
+        raise HTTPException(status_code=409, detail="Call is still in progress")
+    a = call.get("assessment") or {}
+    if a.get("status") == "pending":
+        raise HTTPException(status_code=409, detail="An assessment is already running for this call")
+    if not assessment._enabled():
+        raise HTTPException(status_code=400, detail="Assessment is disabled (TT_ASSESSMENT_ENABLED)")
+    assessment.schedule(call_id, trigger="manual",
+                        requested_by=user.get("username") or "", force=True)
+    return {"ok": True, "status": "queued", "had_override": bool(a.get("override"))}
+
+
+@router.post("/campaigns/{campaign_id}/assess")
+async def eo_campaign_assess(campaign_id: int, request: Request):
+    """Batch-score a campaign's eligible completed calls (default: only those
+    without a completed assessment)."""
+    user = eo_auth.require_eo(request)
+    if not _owns_or_admin(user, eo_db.get_campaign(campaign_id)):
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if not assessment._enabled():
+        raise HTTPException(status_code=400, detail="Assessment is disabled (TT_ASSESSMENT_ENABLED)")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    only_missing = bool((body or {}).get("only_missing", True))
+    data = await store.list_calls(_campaign_since({"campaign_id": campaign_id, "limit": None}))
+    queued = skipped = 0
+    for m in data.get("items") or []:
+        st = m.get("assessment_status")
+        if st == "pending" or (only_missing and st in ("completed", "skipped")):
+            skipped += 1
+            continue
+        full = await store.load_call(m.get("id"))
+        ok, _reason = assessment.eligible(full or {})
+        if not ok:
+            skipped += 1
+            continue
+        assessment.schedule(m["id"], trigger="batch",
+                            requested_by=user.get("username") or "")
+        queued += 1
+    return {"ok": True, "queued": queued, "skipped": skipped}
+
+
+_RED_FLAG_SEVERITY = {"Critical": 0, "Moderate": 1, "None": 2}
+
+
+def _effective(a: dict) -> tuple:
+    """(red_flag, review_status) with a management override applied."""
+    cls = a.get("classifications") or {}
+    ov = a.get("override") or {}
+    return (ov.get("red_flag_level") or cls.get("red_flag_level") or "None",
+            ov.get("review_status") or cls.get("review_status") or "")
+
+
+@router.get("/campaigns/{campaign_id}/ranking")
+async def eo_campaign_ranking(campaign_id: int, request: Request):
+    """The per-employee comparison for the whole campaign: one row per recipient,
+    most concerning first (red-flag severity, then ascending score). Unassessed
+    recipients follow with their pipeline status. ?format=csv streams the full
+    per-category export for management."""
+    user = eo_auth.require_eo(request)
+    campaign = eo_db.get_campaign(campaign_id)
+    if not _owns_or_admin(user, campaign):
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    listing = await store.list_calls(_campaign_since({"campaign_id": campaign_id, "limit": None}))
+    best_by_phone: dict = {}
+    for m in listing.get("items") or []:          # newest first
+        ph = m.get("caller") or ""
+        cur = best_by_phone.get(ph)
+        if cur is None or (m.get("assessment_status") == "completed"
+                           and cur.get("assessment_status") != "completed"):
+            best_by_phone[ph] = m
+
+    contacts = eo_db.list_campaign_contacts(campaign_id, limit=100000)["items"]
+    assessed, rest = [], []
+    for cc in contacts:
+        phone = cc.get("phone") or ""
+        meta = best_by_phone.get(phone)
+        row = {
+            "cc_id": cc.get("id"), "name": cc.get("name") or "", "phone": phone,
+            "call_status": cc.get("call_status"), "outcome": cc.get("rsvp_outcome"),
+            "outcome_label": _rsvp_label(cc.get("rsvp_outcome")),
+            "call_id": meta.get("id") if meta else None,
+            "employee_id": (meta or {}).get("employee_id") or "",
+            "interviewed_at": (meta or {}).get("started_at"),
+            "duration_seconds": (meta or {}).get("duration_seconds"),
+            "assessment_status": (meta or {}).get("assessment_status") or "unreached",
+        }
+        if meta and meta.get("assessment_status") == "completed":
+            full = await store.load_call(meta["id"]) or {}
+            a = full.get("assessment") or {}
+            red_flag, review_status = _effective(a)
+            row.update({
+                "total_score": a.get("total_score"),
+                "scores": a.get("scores") or {},
+                "classifications": a.get("classifications") or {},
+                "red_flag_level": red_flag,
+                "review_status": review_status,
+                "overridden": bool(a.get("override")),
+                "evidence_verified": a.get("evidence_verified"),
+                "summary": a.get("summary") or "",
+                "assessed_at": a.get("scored_at"),
+                "human_review_required": True,
+            })
+            assessed.append(row)
+        else:
+            rest.append(row)
+
+    sort = (request.query_params.get("sort") or "concern").strip().lower()
+    if sort == "score_desc":
+        assessed.sort(key=lambda r: -(r.get("total_score") or 0))
+    elif sort == "score_asc":
+        assessed.sort(key=lambda r: r.get("total_score") or 0)
+    else:                                       # "concern": worst first — what management triages
+        assessed.sort(key=lambda r: (_RED_FLAG_SEVERITY.get(r.get("red_flag_level"), 2),
+                                     r.get("total_score") or 0))
+    rows = assessed + rest
+    for i, r in enumerate(rows, start=1):
+        r["rank"] = i
+
+    if (request.query_params.get("format") or "").lower() == "csv":
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["Rank", "Name", "Phone", "Employee ID", "Score /100",
+                    "Involvement /30", "Conduct /20", "Accountability /20",
+                    "Future compliance /15", "Communication /10", "Suitability /5",
+                    "Involvement level", "Conduct level", "Accountability level",
+                    "Compliance level", "Communication level", "Red flag",
+                    "Review status", "Overridden", "Evidence verified", "Outcome",
+                    "Interviewed at", "Assessment", "Summary"])
+        for r in rows:
+            sc = r.get("scores") or {}
+            cls = r.get("classifications") or {}
+            w.writerow([
+                r["rank"], r["name"], r["phone"], r.get("employee_id") or "",
+                r.get("total_score"),
+                (sc.get("involvement") or {}).get("score"),
+                (sc.get("conduct") or {}).get("score"),
+                (sc.get("accountability") or {}).get("score"),
+                (sc.get("future_compliance") or {}).get("score"),
+                (sc.get("communication") or {}).get("score"),
+                (sc.get("overall_suitability") or {}).get("score"),
+                cls.get("incident_involvement"), cls.get("conduct"),
+                cls.get("accountability"), cls.get("future_compliance"),
+                cls.get("communication"),
+                r.get("red_flag_level"), r.get("review_status"),
+                "yes" if r.get("overridden") else "",
+                {True: "yes", False: "NO"}.get(r.get("evidence_verified"), ""),
+                r.get("outcome_label") or r.get("outcome"),
+                r.get("interviewed_at"), r.get("assessment_status"),
+                r.get("summary") or "",
+            ])
+        return Response(content=buf.getvalue(), media_type="text/csv",
+                        headers={"Content-Disposition":
+                                 f"attachment; filename=ranking_campaign_{campaign_id}.csv"})
+
+    return JSONResponse({"campaign_id": campaign_id,
+                         "campaign_name": (campaign or {}).get("name"),
+                         "total": len(rows), "assessed": len(assessed),
+                         "items": rows})
+
+
+@router.patch("/calls/{call_id}/review")
+async def eo_call_review(call_id: str, request: Request):
+    """Management override of an assessment's routing (review_status / red_flag_level)
+    with provenance. Scores are never edited — they only change by re-scoring."""
+    user = eo_auth.require_eo(request)
+    call = await _owned_call(user, call_id)
+    if call.get("status") == "in_progress":
+        raise HTTPException(status_code=409, detail="Call is still in progress")
+    a = call.get("assessment") or {}
+    if a.get("status") == "pending":
+        raise HTTPException(status_code=409, detail="An assessment is running — try again shortly")
+    if a.get("status") != "completed":
+        raise HTTPException(status_code=400, detail="No completed assessment to review")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    review_status = (body or {}).get("review_status")
+    red_flag_level = (body or {}).get("red_flag_level")
+    note = str((body or {}).get("note") or "").strip()[:500]
+    if review_status is not None and review_status not in assessment.REVIEW_STATUSES:
+        raise HTTPException(status_code=400, detail="Pick a valid review status")
+    if red_flag_level is not None and red_flag_level not in assessment.RED_FLAG_LEVELS:
+        raise HTTPException(status_code=400, detail="Pick a valid red-flag level")
+    if review_status is None and red_flag_level is None:
+        raise HTTPException(status_code=400, detail="Nothing to change")
+    username = user.get("username") or ""
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    def _apply(c):
+        blk = c.get("assessment") or {}
+        if blk.get("status") != "completed":
+            return
+        ov = blk.get("override") or {}
+        if "original" not in ov:
+            cls = blk.get("classifications") or {}
+            ov["original"] = {"review_status": cls.get("review_status"),
+                              "red_flag_level": cls.get("red_flag_level")}
+        if review_status is not None:
+            ov["review_status"] = review_status
+        if red_flag_level is not None:
+            ov["red_flag_level"] = red_flag_level
+        if note:
+            ov["note"] = note
+        ov["edited_by"] = username
+        ov["edited_at"] = now_iso
+        blk["override"] = ov
+        c["assessment"] = blk
+        assessment._promote_flat_fields(c)
+
+    saved = await store.update_call(call_id, _apply)
+    if saved is None:
+        raise HTTPException(status_code=404, detail="Call not found")
+    eff_rf, eff_rs = _effective(saved.get("assessment") or {})
+    return {"ok": True, "review_status": eff_rs, "red_flag_level": eff_rf,
+            "edited_by": username}

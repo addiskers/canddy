@@ -33,9 +33,11 @@ export default function Settings() {
       <div className="card">
         <div className="panel-head"><h3>About</h3></div>
         <div className="muted" style={{ fontSize: '0.85rem', lineHeight: 1.7 }}>
-          EO AI Calling Platform. Campaigns dial paced outbound calls with GvoxAi, the EO voice agent.
-          Only one campaign can be scheduled or live at a time. Turning the scheduler off pauses all
-          outbound dialing and callbacks.
+          Tring Tring AI — an AI phone interviewer for Canny Management Services. Campaigns dial paced
+          outbound calls with Tring Tring, which conducts a structured interview about the 6 Aug 2026
+          Baoxhin work stoppage and produces a scored assessment for management review. Only one
+          campaign can be scheduled or live at a time. Turning the scheduler off pauses all outbound
+          dialing and callbacks.
         </div>
       </div>
     </div>

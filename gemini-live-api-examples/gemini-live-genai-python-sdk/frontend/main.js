@@ -1,4 +1,4 @@
-// EO Gujarat — "An Evening with Radha" browser client. Talks to the FastAPI server over /ws, which proxies the Gemini Live API.
+// Tring Tring AI — interview test-console browser client. Talks to the FastAPI server over /ws, which proxies the Gemini Live API.
 
 // DOM
 const statusDiv = document.getElementById("status");
@@ -29,9 +29,9 @@ const endLine = document.getElementById("end-line");
 const outcomeBadge = document.getElementById("outcome-badge");
 const callSummary = document.getElementById("call-summary");
 
-// Greeting nudge sent on connect so Radha speaks first.
+// Greeting nudge sent on connect so the agent speaks first.
 const GREETING_TRIGGER =
-  "[The guest has just answered the call. Greet them now with your invitation.]";
+  "[The user has connected to the browser test console. Greet in polite Hindi as Tring Tring AI on behalf of Canny management and ask who you are speaking with. This is a TEST session of the Baoxhin screening interview.]";
 
 // State
 let callStartTime = null;
@@ -40,7 +40,7 @@ let orbRAF = null;
 let radhaSpeaking = false;
 let micStarting = false;
 let sessionEnded = false;
-let rsvpData = null; // { attending, guest_name, note }
+let rsvpData = null; // { outcome_status, note }
 let callTranscript = []; // { role: "user"|"gemini", text, time }
 let currentUserMsg = null;
 let currentGeminiMsg = null;
@@ -58,7 +58,7 @@ const geminiClient = new GeminiClient({
     startOrb();
     setCaption("Connected", "Say hello…");
 
-    // Let EO Gujarat speak first, then open the mic.
+    // Let Tring Tring speak first, then open the mic.
     geminiClient.sendText(GREETING_TRIGGER);
     startMic();
   },
@@ -73,7 +73,7 @@ const geminiClient = new GeminiClient({
       // Binary = agent audio
       if (!radhaSpeaking) {
         radhaSpeaking = true;
-        setCaption("Speaking…", "EO Gujarat invitation");
+        setCaption("Speaking…", "Tring Tring AI · Canny Management Services");
       }
       mediaHandler.playAudio(event.data);
     }
@@ -174,25 +174,18 @@ function endTurns() {
   currentGeminiMsg = null;
 }
 
-// RSVP
+// RSVP (interview outcome)
 function renderRSVP(result) {
+  const outcome = (result && result.outcome_status) || "";
   rsvpData = {
-    attending: !!(result && result.attending),
-    guest_name: (result && result.guest_name) || "",
+    outcome_status: outcome,
     note: (result && result.note) || "",
   };
   rsvpCard.classList.remove("pending", "coming", "declined");
-  if (rsvpData.attending) {
-    rsvpCard.classList.add("coming");
-    rsvpEmoji.textContent = "🎉";
-    rsvpTitle.textContent = rsvpData.guest_name ? `See you, ${rsvpData.guest_name}!` : "You're coming!";
-    rsvpSub.textContent = "We can't wait to see you on the 8th.";
-  } else {
-    rsvpCard.classList.add("declined");
-    rsvpEmoji.textContent = "💛";
-    rsvpTitle.textContent = "Maybe next time";
-    rsvpSub.textContent = "The EO Gujarat team will follow up with you.";
-  }
+  rsvpCard.classList.add(outcome === "yes" ? "coming" : "declined");
+  rsvpEmoji.textContent = "📋";
+  rsvpTitle.textContent = "Outcome captured: " + (outcome || "—");
+  rsvpSub.textContent = rsvpData.note || "Recorded for human review.";
 }
 
 // Message handling
@@ -210,7 +203,7 @@ function handleJsonMessage(msg) {
     case "turn_complete":
       radhaSpeaking = false;
       endTurns();
-      setCaption("Listening…", "Say “Yes” or “No”");
+      setCaption("Listening…", "Answer when ready");
       break;
     case "user":
       addChunk("user", msg.text);
@@ -219,7 +212,7 @@ function handleJsonMessage(msg) {
       addChunk("gemini", msg.text);
       break;
     case "tool_call":
-      if (msg.name === "record_rsvp") renderRSVP(msg.result);
+      if (msg.name === "record_rsvp" || msg.name === "record_interview") renderRSVP(msg.result);
       break;
     case "error":
       appendMessage("system", "Error: " + (msg.error || "unknown"));
@@ -382,18 +375,15 @@ function showSessionEnd() {
   stopOrb();
 
   let badgeCls, badgeText, emoji, title, line;
-  if (rsvpData && rsvpData.attending) {
-    badgeCls = "coming"; badgeText = "Coming on the 8th";
-    emoji = "🎉"; title = "See you on the 8th!";
-    line = "We're so glad you're coming to the EO Gujarat evening.";
-  } else if (rsvpData && !rsvpData.attending) {
-    badgeCls = "declined"; badgeText = "Not this time";
-    emoji = "💛"; title = "We'll miss you";
-    line = "If you change your mind, the EO Gujarat team will follow up.";
+  if (rsvpData && rsvpData.outcome_status) {
+    badgeCls = rsvpData.outcome_status === "yes" ? "coming" : "declined";
+    badgeText = "Outcome recorded";
+    emoji = "📋"; title = "Interview session ended";
+    line = "The responses have been recorded for human review.";
   } else {
-    badgeCls = "declined"; badgeText = "No answer recorded";
-    emoji = "👋"; title = "Call ended";
-    line = "No RSVP was captured on this call.";
+    badgeCls = "declined"; badgeText = "No outcome recorded";
+    emoji = "👋"; title = "Interview session ended";
+    line = "No outcome was captured on this call.";
   }
   endEmoji.textContent = emoji;
   endTitle.textContent = title;
@@ -401,10 +391,9 @@ function showSessionEnd() {
   outcomeBadge.className = "outcome-badge " + badgeCls;
   outcomeBadge.textContent = badgeText;
 
-  const decision = rsvpData ? (rsvpData.attending ? "Coming ✓" : "Not coming") : "—";
   let html = `<div class="summary-title">Call summary</div>`;
-  html += summaryItem("Guest", (rsvpData && rsvpData.guest_name) || "—");
-  html += summaryItem("Decision", decision);
+  html += summaryItem("Employee", "—");
+  html += summaryItem("Outcome", (rsvpData && rsvpData.outcome_status) || "—");
   html += summaryItem("Duration", getCallDuration());
   html += summaryItem("Exchanges", `${callTranscript.length}`);
   if (rsvpData && rsvpData.note) html += summaryItem("Note", rsvpData.note);
@@ -416,7 +405,7 @@ function showSessionEnd() {
       </button>
       <div class="tr-full">`;
     for (const e of callTranscript) {
-      const roleLabel = e.role === "user" ? "Guest" : "EO Gujarat";
+      const roleLabel = e.role === "user" ? "Employee" : "Tring Tring";
       html += `<div class="tr-line tr-${e.role}">
         <span class="tr-time">${escapeHtml(e.time)}</span>
         <span class="tr-role">${roleLabel}:</span>
@@ -449,9 +438,9 @@ function resetUI() {
 
   chatLog.innerHTML = '<div class="transcript-empty">The conversation will appear here…</div>';
   rsvpCard.className = "rsvp-card glass pending";
-  rsvpEmoji.textContent = "💌";
-  rsvpTitle.textContent = "Awaiting your answer";
-  rsvpSub.textContent = "Just say “Yes” or “No”.";
+  rsvpEmoji.textContent = "📋";
+  rsvpTitle.textContent = "In progress";
+  rsvpSub.textContent = "The interview is in progress.";
   callTimerEl.textContent = "00:00";
   micBtn.classList.add("active");
   micBtn.dataset.active = "true";
@@ -465,7 +454,7 @@ function resetUI() {
 
 restartBtn.onclick = resetUI;
 
-// "Call me on my phone" (Twilio outbound)
+// "Call me on my phone" (outbound phone call)
 const phoneInput = document.getElementById("phoneInput");
 const callMeBtn = document.getElementById("callMeBtn");
 const callMeStatus = document.getElementById("callMeStatus");

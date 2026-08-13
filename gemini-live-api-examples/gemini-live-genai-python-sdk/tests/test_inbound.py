@@ -1,5 +1,6 @@
-"""Inbound call-back: caller lookup + context triggers, answer-webhook stash,
-bridge per-call trigger, and RSVP reconciliation back onto the campaign."""
+"""Inbound call-back: caller lookup + context triggers (identity re-confirmation
+before ANY incident content), answer-webhook stash, bridge per-call trigger, and
+outcome reconciliation back onto the campaign."""
 
 import asyncio
 import json
@@ -11,16 +12,16 @@ import store
 from plivo_handler import PlivoMediaBridge
 from recorder import CallRecorder
 
-NOW = datetime(2026, 7, 21, 12, 0, 0, tzinfo=timezone.utc)   # 17:30 IST
+NOW = datetime(2026, 8, 13, 12, 0, 0, tzinfo=timezone.utc)   # 17:30 IST
 
 
 def _ago(**kw):
     return (NOW - timedelta(**kw)).isoformat()
 
 
-def _seed(eo_db, phone, name="Amman Kumar", status="live", campaign="July Event", **cc_over):
+def _seed(eo_db, phone, name="Amman Kumar", status="live", campaign="Baoxhin Screening", **cc_over):
     """One campaign + one contact; returns (campaign_id, cc_id)."""
-    cid = eo_db.create_campaign(campaign, "2026-07-01T00:00:00+00:00", 1, 4, 3, 1, status=status)
+    cid = eo_db.create_campaign(campaign, "2026-08-10T00:00:00+00:00", 1, 4, 3, 1, status=status)
     eo_db.add_campaign_contacts(cid, [{"id": None, "phone": phone, "name": name}])
     cc = eo_db._one(
         "SELECT * FROM campaign_contacts WHERE campaign_id = ? ORDER BY id DESC LIMIT 1", (cid,))
@@ -41,7 +42,19 @@ def test_when_phrase_buckets():
     assert wp(None, now=NOW) == "recently"
 
 
-# build(): trigger variants — never invented context
+# build(): trigger variants — never invented context, identity confirmed FIRST
+
+def test_unknown_trigger_promises_no_incident_content():
+    t = inbound_context.UNKNOWN_TRIGGER
+    # No incident content may reach an unidentified caller
+    assert "6 August" not in t and "6th of August" not in t
+    assert "work stoppage" not in t and "Baoxhin" not in t
+    # It names only "Canny management" and asks who is calling
+    assert "Canny management" in t
+    assert "ask who is calling" in t
+    # incident/interview appear ONLY inside the explicit prohibition
+    assert "Do NOT mention any incident, interview, or date to an unidentified caller" in t
+
 
 def test_build_unknown_number(fresh_eo_db, monkeypatch):
     fresh_eo_db.init()
@@ -62,10 +75,35 @@ def test_build_missed_no_answer_named(fresh_eo_db, monkeypatch):
     assert out["campaign_id"] == cid
     assert out["name"] == "Amman"                              # first token of the cc name
     t = out["trigger"]
-    assert "Amman is calling US back" in t
-    assert "Thanks for calling back" in t
+    assert "belongs to Amman" in t
     assert "a little while ago" in t
-    assert "you were unavailable" in t
+    assert "could not reach them" in t
+    assert "thank them for calling back" in t
+    # identity re-confirmation comes BEFORE any interview content
+    assert inbound_context._IDENTITY_RULE.format(who="Amman") in t
+
+
+def test_every_matched_trigger_requires_identity_confirmation(fresh_eo_db, monkeypatch):
+    """Phones are shared: EVERY roster/campaign-matched trigger must carry the
+    CONFIRM-by-name rule (wrong_number is the exception — it maps to UNKNOWN)."""
+    eo_db = fresh_eo_db
+    eo_db.init()
+    monkeypatch.setattr(directory, "_MAP", {})
+    cases = {
+        "+919810000001": {"rsvp_outcome": "yes"},
+        "+919810000002": {"rsvp_outcome": "no"},
+        "+919810000003": {"rsvp_outcome": "callback"},
+        "+919810000004": {"rsvp_outcome": "voicemail", "attempts": 1,
+                          "last_attempt_at": _ago(hours=2)},
+        "+919810000005": {"rsvp_outcome": "do_not_contact"},
+        "+919810000006": {"attempts": 2, "last_attempt_at": _ago(hours=3)},   # missed
+        "+919810000007": {},                                                  # not yet called
+    }
+    for phone, cc_over in cases.items():
+        _seed(eo_db, phone, **cc_over)
+        t = inbound_context.build(phone, now=NOW)["trigger"]
+        assert "CONFIRM by name" in t, f"no identity rule for {cc_over}"
+        assert inbound_context._IDENTITY_RULE.format(who="Amman") in t, f"for {cc_over}"
 
 
 def test_build_voicemail_variant(fresh_eo_db, monkeypatch):
@@ -77,16 +115,76 @@ def test_build_voicemail_variant(fresh_eo_db, monkeypatch):
     t = inbound_context.build("+919824018000", now=NOW)["trigger"]
     assert "voicemail" in t
     assert "earlier today" in t
+    assert "begin THE INTERVIEW" in t
 
 
-def test_build_already_rsvpd_yes(fresh_eo_db, monkeypatch):
+def test_build_already_completed_interview_is_not_redone(fresh_eo_db, monkeypatch):
     eo_db = fresh_eo_db
     eo_db.init()
     monkeypatch.setattr(directory, "_MAP", {})
     _seed(eo_db, "+919824018000", attempts=1, rsvp_outcome="yes")
     t = inbound_context.build("+919824018000", now=NOW)["trigger"]
-    assert "ALREADY RSVP'd YES" in t
-    assert "calling US back" not in t                          # no missed-call story
+    assert "ALREADY COMPLETED" in t
+    assert "Do NOT redo the interview" in t
+    assert "tried calling" not in t                            # no missed-call story
+
+
+def test_build_declined_may_opt_back_in_without_pressure(fresh_eo_db, monkeypatch):
+    eo_db = fresh_eo_db
+    eo_db.init()
+    monkeypatch.setattr(directory, "_MAP", {})
+    _seed(eo_db, "+919824018000", attempts=1, rsvp_outcome="no")
+    t = inbound_context.build("+919824018000", now=NOW)["trigger"]
+    assert "DECLINED" in t
+    assert "Do NOT pressure them" in t
+    assert "wish to give their side" in t                      # opting back in is allowed
+
+
+def test_build_callback_resumes_from_first_uncovered_question(fresh_eo_db, monkeypatch):
+    """Origin call marked q1-3 via mark_question → the inbound resume trigger says
+    RESUME from question 4 instead of restarting a 15-minute interview."""
+    eo_db = fresh_eo_db
+    eo_db.init()
+    monkeypatch.setattr(directory, "_MAP", {})
+    origin_id = "resume-origin-1"
+    store._save_sync({
+        "id": origin_id, "call_sid": "sid-resume1", "source": "plivo",
+        "caller": "+919824018000", "started_at": _ago(hours=3), "status": "completed",
+        "booking_created": False,
+        "interview_progress": {
+            "1": {"status": "answered", "gist": "was at his station", "ts": "t"},
+            "2": {"status": "partial", "gist": "", "ts": "t"},
+            "3": {"status": "declined", "gist": "", "ts": "t"},
+        },
+        "transcript": [], "tool_calls": [],
+    })
+    _seed(eo_db, "+919824018000", attempts=1, rsvp_outcome="callback",
+          last_call_id=origin_id)
+    t = inbound_context.build("+919824018000", now=NOW)["trigger"]
+    assert "Questions already covered last time: 1, 2, 3" in t
+    assert "RESUME the interview from question 4" in t
+    assert "do not re-ask" in t
+
+
+def test_build_callback_without_progress_has_no_resume_hint(fresh_eo_db, monkeypatch):
+    eo_db = fresh_eo_db
+    eo_db.init()
+    monkeypatch.setattr(directory, "_MAP", {})
+    _seed(eo_db, "+919824018000", attempts=1, rsvp_outcome="callback")
+    t = inbound_context.build("+919824018000", now=NOW)["trigger"]
+    assert "asked us to call" in t
+    assert "RESUME the interview from question" not in t
+
+
+def test_build_wrong_number_maps_to_unknown_trigger(fresh_eo_db, monkeypatch):
+    eo_db = fresh_eo_db
+    eo_db.init()
+    monkeypatch.setattr(directory, "_MAP", {})
+    _seed(eo_db, "+919824018000", attempts=1, rsvp_outcome="wrong_number")
+    out = inbound_context.build("+919824018000", now=NOW)
+    assert out["trigger"] == inbound_context.UNKNOWN_TRIGGER   # number confirmed not theirs
+    assert out["name"] == ""
+    assert out["campaign_id"] is None
 
 
 def test_build_not_yet_called_never_claims_a_missed_call(fresh_eo_db, monkeypatch):
@@ -96,7 +194,8 @@ def test_build_not_yet_called_never_claims_a_missed_call(fresh_eo_db, monkeypatc
     _seed(eo_db, "+919824018000")                              # attempts=0, no outcome
     t = inbound_context.build("+919824018000", now=NOW)["trigger"]
     assert "NOT called them yet" in t
-    assert "Thanks for calling back" not in t
+    assert "do NOT claim we tried calling" in t
+    assert "thank them for calling back" not in t
 
 
 def test_build_normalizes_bare_plivo_from(fresh_eo_db, monkeypatch):
@@ -117,18 +216,21 @@ def test_build_prefers_active_campaign_over_more_recent_completed(fresh_eo_db, m
     monkeypatch.setattr(directory, "_MAP", {})
     live_cid, _ = _seed(eo_db, "+919824018000", status="live",
                         attempts=1, last_attempt_at=_ago(minutes=30))
-    done_cid, _ = _seed(eo_db, "+919824018000", status="completed", campaign="Old Event",
+    done_cid, _ = _seed(eo_db, "+919824018000", status="completed", campaign="Old Screening",
                         attempts=2, rsvp_outcome="no")          # newer row, inactive campaign
     out = inbound_context.build("+919824018000", now=NOW)
     assert out["campaign_id"] == live_cid != done_cid
 
 
-def test_build_directory_member_without_campaign(fresh_eo_db, monkeypatch):
+def test_build_roster_employee_without_campaign(fresh_eo_db, monkeypatch):
     fresh_eo_db.init()
-    monkeypatch.setattr(directory, "_MAP", {"+919824018000": "Pratik"})
+    monkeypatch.setattr(directory, "_MAP",
+                        {"+919824018000": {"first_name": "Pratik", "employee_id": "CNY-042"}})
     t = inbound_context.build("+919824018000", now=NOW)["trigger"]
     assert "Pratik" in t
     assert "Do NOT claim we called them" in t
+    assert "do NOT start an" in t                              # no unscheduled interview
+    assert inbound_context._IDENTITY_RULE.format(who="Pratik") in t
 
 
 # /plivo/answer webhook: inbound detection + meta stash (outbound path untouched)
@@ -155,6 +257,7 @@ def test_answer_webhook_inbound_stashes_direction_and_trigger(fresh_eo_db, monke
         assert meta["name"] == "Amman"
         assert meta["campaign_id"] == str(cid)
         assert meta["trigger"].startswith("[INBOUND")
+        assert "CONFIRM by name" in meta["trigger"]
     finally:
         main._pending_call_meta.pop("cu-inbound-test", None)
 
@@ -215,10 +318,12 @@ def test_bridge_uses_per_call_trigger_over_named_opening():
 
 def test_bridge_empty_trigger_falls_back_to_named_opening():
     got = asyncio.run(_run_start(lambda cid: ""))
-    assert "Am I speaking to Pratik?" in got
+    assert "first name is Pratik" in got
+    assert "क्या मेरी बात Pratik जी से हो रही है?" in got      # Hindi identity-check opening
+    assert "Do NOT mention the incident" in got
 
 
-# Reconciliation: inbound RSVP → campaign contact settled + stale callbacks cancelled
+# Reconciliation: inbound outcome → campaign contact settled + stale callbacks cancelled
 
 def _inbound_recorder(**over):
     r = CallRecorder(model="test")
@@ -260,11 +365,11 @@ def test_reconcile_inbound_callback_keeps_retries_alive(monkeypatch):
     assert cancels == [("+919824018000", "in1")]                # old callbacks still cancelled
 
 
-def test_reconcile_skips_outbound_and_rsvpless_calls(monkeypatch):
+def test_reconcile_skips_outbound_and_outcomeless_calls(monkeypatch):
     cc_calls, cancels = _run_reconcile(
         monkeypatch, _inbound_recorder(source="plivo", rsvp_outcome_status="yes"))
     assert cc_calls == [] and cancels == []
-    cc_calls, cancels = _run_reconcile(monkeypatch, _inbound_recorder())  # no RSVP captured
+    cc_calls, cancels = _run_reconcile(monkeypatch, _inbound_recorder())  # no outcome captured
     assert cc_calls == [] and cancels == []
 
 

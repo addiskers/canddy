@@ -124,7 +124,13 @@ export default function CampaignRecipients({ campaignId }) {
         </table>
       </div>
       <div className="pager"><span>{total} recipients</span></div>
-      {detail && <CallDrawer call={detail} onClose={() => setDetail(null)} />}
+      {detail && (
+        <CallDrawer
+          call={detail}
+          onClose={() => setDetail(null)}
+          onReload={() => api.get(`/calls/${encodeURIComponent(detail.id || detail.call_sid)}`).then(setDetail).catch(() => {})}
+        />
+      )}
     </div>
   )
 }

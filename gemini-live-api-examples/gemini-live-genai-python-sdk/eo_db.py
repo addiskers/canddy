@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS users (
     password_salt TEXT NOT NULL,
     role          TEXT NOT NULL DEFAULT 'eo_admin',   -- eo_admin | eo_agent
     active        INTEGER NOT NULL DEFAULT 1,
+    provider      TEXT NOT NULL DEFAULT 'plivo',      -- telephony provider: plivo | enablex
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL
 );
@@ -127,6 +128,9 @@ def init() -> None:
             conn.execute("ALTER TABLE campaigns ADD COLUMN call_start_min INTEGER NOT NULL DEFAULT 540")
         if "call_end_min" not in camp_cols:
             conn.execute("ALTER TABLE campaigns ADD COLUMN call_end_min INTEGER NOT NULL DEFAULT 1260")
+        user_cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "provider" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN provider TEXT NOT NULL DEFAULT 'plivo'")
         contact_cols = {r["name"] for r in conn.execute("PRAGMA table_info(contacts)").fetchall()}
         if "remark" not in contact_cols:
             conn.execute("ALTER TABLE contacts ADD COLUMN remark TEXT")
@@ -201,12 +205,13 @@ def count_users() -> int:
     return int(r["c"]) if r else 0
 
 
-def create_user(username: str, name: str, password_hash: str, password_salt: str, role: str = "eo_admin") -> int:
+def create_user(username: str, name: str, password_hash: str, password_salt: str,
+                role: str = "eo_admin", provider: str = "plivo") -> int:
     now = _now()
     return _exec(
-        "INSERT INTO users (username, name, password_hash, password_salt, role, active, created_at, updated_at) "
-        "VALUES (?,?,?,?,?,1,?,?)",
-        (username, name, password_hash, password_salt, role, now, now),
+        "INSERT INTO users (username, name, password_hash, password_salt, role, active, provider, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,1,?,?,?)",
+        (username, name, password_hash, password_salt, role, provider, now, now),
     )
 
 
@@ -219,11 +224,23 @@ def get_user(user_id: int) -> dict | None:
 
 
 def list_users() -> list[dict]:
-    return _rows("SELECT id, username, name, role, active, created_at FROM users ORDER BY created_at DESC")
+    return _rows("SELECT id, username, name, role, active, provider, created_at FROM users ORDER BY created_at DESC")
 
 
 def set_user_active(user_id: int, active: bool) -> None:
     _exec("UPDATE users SET active = ?, updated_at = ? WHERE id = ?", (1 if active else 0, _now(), user_id))
+
+
+def set_user_provider(user_id: int, provider: str) -> None:
+    _exec("UPDATE users SET provider = ?, updated_at = ? WHERE id = ?", (provider, _now(), int(user_id)))
+
+
+def user_provider(user_id) -> str:
+    """Telephony provider assigned to a user ('' when unknown → caller falls back to the default)."""
+    if not user_id:
+        return ""
+    u = get_user(int(user_id))
+    return (u or {}).get("provider") or ""
 
 
 def update_user_password(user_id: int, password_hash: str, password_salt: str) -> None:

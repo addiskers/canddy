@@ -30,10 +30,10 @@ export default function Login() {
     <div className="login-wrap">
       <form className="login-card" onSubmit={submit}>
         <div className="brand">
-          <div className="logo">EO</div>
+          <div className="logo">TT</div>
           <div>
-            <div className="name">EO AI Calling</div>
-            <div className="sub">Admin Platform</div>
+            <div className="name">Tring Tring AI</div>
+            <div className="sub">Interview Platform</div>
           </div>
         </div>
         {err && <div className="err">{err}</div>}

@@ -25,6 +25,25 @@ GEMINI_RATES_PER_1M = {
 # Twilio fallback rate (USD per minute), used only until the real Call.price is available
 TWILIO_PER_MINUTE = float(os.getenv("RATE_TWILIO_PER_MIN", "0.014"))
 
+# Post-call assessment text-model rates (USD per 1,000,000 tokens)
+ASSESS_RATES_PER_1M = {
+    "in":  float(os.getenv("RATE_ASSESS_TEXT_IN",  "0.50")),
+    "out": float(os.getenv("RATE_ASSESS_TEXT_OUT", "3.00")),
+}
+
+
+def compute_assessment_cost(tokens):
+    """USD cost of one scoring pass from its usage_metadata token counts.
+    Thinking tokens are billed at the output rate."""
+    t = tokens or {}
+    r = ASSESS_RATES_PER_1M
+    cost = (
+        t.get("in", 0) * r["in"]
+        + t.get("out", 0) * r["out"]
+        + t.get("thoughts", 0) * r["out"]
+    ) / 1_000_000.0
+    return round(cost, 6)
+
 
 def _empty_tokens():
     """Zeroed token bucket structure used by a call record."""
@@ -96,7 +115,8 @@ def compute_total(call):
         twilio_price = round((secs / 60.0) * TWILIO_PER_MINUTE, 6)
         estimated = True
 
-    total = round((gemini or 0) + (twilio_price or 0), 6)
+    assess = ((call.get("assessment") or {}).get("cost_usd")) or 0
+    total = round((gemini or 0) + (twilio_price or 0) + assess, 6)
     return total, estimated
 
 

@@ -133,7 +133,8 @@ async def _dial_one(cc, campaign, now):
     try:
         res = await asyncio.wait_for(
             dialer.place_call(cc["phone"], base_url=os.getenv("PUBLIC_URL"),
-                              name=cc.get("name") or "", campaign_id=campaign["id"]),
+                              name=cc.get("name") or "", campaign_id=campaign["id"],
+                              provider=eo_db.user_provider(campaign.get("created_by")) or None),
             timeout=_cfg_int("EO_CAMPAIGN_DIAL_TIMEOUT", 60))
     except asyncio.TimeoutError:
         res = {"error": "dial timeout"}

@@ -17,17 +17,20 @@ export default function Dashboard() {
   }, [])
 
   const bySource = s?.by_source || {}
-  const yesRate = s ? Math.round(((s.unique_yes_rate ?? s.booking_conversion_rate) || 0) * 100) : 0
+  const avgScore = s?.avg_score
+  const scoreColor = avgScore == null ? undefined
+    : avgScore >= 75 ? 'var(--ok-2)' : avgScore >= 50 ? 'var(--amber)' : '#fca5a5'
+  const criticals = s?.red_flags?.Critical ?? 0
 
   return (
     <div className="stack">
-      <PageHeader title="Dashboard" sub="Overview of your EO calling activity" />
+      <PageHeader title="Dashboard" sub="Overview of Tring Tring interview activity" />
 
       {active && (
-        <Link to={`/campaigns/${active.id}`} className="card" style={{ display: 'block', borderColor: 'rgba(16,185,129,0.35)' }}>
+        <Link to={`/campaigns/${active.id}`} className="card" style={{ display: 'block', borderColor: 'var(--accent-line)' }}>
           <div className="row-between">
             <div>
-              <div className="label" style={{ color: 'var(--green)' }}>
+              <div className="label" style={{ color: 'var(--accent)' }}>
                 Current {active.status === 'live' ? 'Live' : 'Scheduled'} Campaign
                 {active.status === 'live' && <span className="live-dot" style={{ marginLeft: 8 }} />}
               </div>
@@ -58,9 +61,24 @@ export default function Dashboard() {
           <div className="sub">{s ? `${s.total_seconds || 0}s across all calls` : ''}</div>
         </div>
         <div className="card stat">
-          <div className="label">RSVP Yes-Rate</div>
-          <div className="value">{s ? `${yesRate}%` : '—'}</div>
-          <div className="sub">{s ? `${(s.unique_yes ?? s.bookings) || 0} coming (Cumulative across all campaigns till date)` : ''}</div>
+          <div className="label">Interviews Completed</div>
+          <div className="value">{s ? (s.interviews_completed ?? 0) : '—'}</div>
+          <div className="sub">{s ? `${s.assessed_calls ?? 0} assessed` : ''}</div>
+        </div>
+        <div className="card stat">
+          <div className="label">Avg Score</div>
+          <div className="value" style={{ color: scoreColor }}>{s ? (avgScore ?? '—') : '—'}</div>
+          <div className="sub">{s && avgScore != null ? 'out of 100, across assessed interviews' : ''}</div>
+        </div>
+        <div className="card stat">
+          <div className="label">Critical Red Flags</div>
+          <div className="value" style={{ color: criticals > 0 ? '#fca5a5' : undefined }}>{s ? criticals : '—'}</div>
+          <div className="sub">{s ? `moderate: ${s.red_flags?.Moderate ?? 0}` : ''}</div>
+        </div>
+        <div className="card stat">
+          <div className="label">Pending Review</div>
+          <div className="value">{s ? (s.pending_review ?? 0) : '—'}</div>
+          <div className="sub">{s ? 'assessed interviews awaiting human review' : ''}</div>
         </div>
       </div>
 
@@ -68,7 +86,7 @@ export default function Dashboard() {
         <div className="grid stat-grid">
           <div className="card stat">
             <div className="label">Total Cost</div>
-            <div className="value" style={{ color: 'var(--green)' }}>{fmtCost(s.total_cost_usd)}</div>
+            <div className="value" style={{ color: 'var(--accent)' }}>{fmtCost(s.total_cost_usd)}</div>
             <div className="sub">Gemini {fmtCost(s.gemini_cost_usd)}</div>
           </div>
           <div className="card stat">

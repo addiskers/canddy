@@ -1,16 +1,19 @@
 """
-Inbound call-back context — when a member dials the EO number back (usually after
-seeing a missed call from us), look the caller up in the campaign contact list and
-build the exact opening instruction ("trigger") the agent should follow, e.g.:
-
-    "Hi Amman! Thanks for calling back — I tried reaching you a little while ago
-     on behalf of EO Gujarat about the upcoming event, but I believe you were
-     unavailable..."
+Inbound call-back context — when an employee dials the Tring Tring number back
+(usually after a missed call or our voicemail message), look the caller up in the
+campaign contact list and build the exact opening instruction ("trigger") the
+agent should follow.
 
 All classification and date math happens HERE in Python — the model is never asked
 to reason about timestamps or guess call history. Pure read-side helper: never
 raises; an unknown number gets a safe generic-greeting trigger with NO invented
-context (a wrong name or a made-up "we called you" is worse than a plain hello).
+context.
+
+Screening-specific hard rule baked into every trigger: this is a disciplinary
+interview, and phones are shared — so even a roster-matched inbound number must
+RE-CONFIRM the caller's identity by name before ANY incident content is spoken.
+No trigger for an unconfirmed caller ever mentions the incident, the interview,
+or the 6th of August.
 """
 
 import logging
@@ -19,18 +22,28 @@ from zoneinfo import ZoneInfo
 
 import directory
 import eo_db
+import store
 
 logger = logging.getLogger(__name__)
 
 _IST = ZoneInfo("Asia/Kolkata")
 
-# Caller not in any campaign and not in the member directory.
+# Caller not in any campaign and not in the employee roster.
 UNKNOWN_TRIGGER = (
-    "[INBOUND CALL: someone has just called the EO Gujarat number. You do NOT know "
-    "who they are — never invent a name and never claim you called them. Greet them "
-    "warmly, say you're speaking on behalf of EO Gujarat, and ask how you can help "
-    "with the event. If they say we called them, apologise lightly for missing each "
-    "other and continue with THE INVITATION.]"
+    "[INBOUND CALL: someone has just called this number. You do NOT know who they "
+    "are — never invent a name and never claim you called them. Greet politely in "
+    "Hindi, say you're speaking on behalf of Canny management, and ask who is "
+    "calling. Do NOT mention any incident, interview, or date to an unidentified "
+    "caller. If they identify themselves as a Canny employee we tried to reach, "
+    "confirm their name, then follow PURPOSE & CONSENT before any interview.]"
+)
+
+_IDENTITY_RULE = (
+    "IDENTITY FIRST: even though this number matches {who}, phones are shared — "
+    "CONFIRM by name that you are actually speaking with {who} before ANY mention "
+    "of the incident or the interview. If it is someone else, say only that this "
+    "is an official work matter from Canny management and ask when {who} can be "
+    "reached."
 )
 
 
@@ -59,30 +72,56 @@ def _when_phrase(last_attempt_iso, now=None):
 
 def _first_name(cc, phone):
     """Campaign-contact name (the name we greeted them with on the outbound leg)
-    wins over the member directory; either may be empty."""
+    wins over the employee roster; either may be empty."""
     name = str((cc or {}).get("name") or "").strip()
     if name:
         return name.split()[0]
     return directory.first_name_for(phone)
 
 
-def _missed_trigger(first_name, when, agent_reason, member_line):
+def _resume_hint(cc):
+    """For an incomplete interview: which questions are already marked on the
+    origin call, so the agent resumes at question N instead of restarting a
+    15-minute interview. Sync read of one call JSON; never raises."""
+    try:
+        call_id = (cc or {}).get("last_call_id")
+        if not call_id:
+            return ""
+        call = store._load_sync(call_id)
+        if not call:
+            return ""
+        progress = call.get("interview_progress") or {}
+        done = sorted(int(k) for k in progress.keys() if str(k).isdigit())
+        if not done:
+            return ""
+        nxt = next((n for n in range(1, 21) if n not in done), 21)
+        if nxt > 20:
+            return ""
+        return (f" Questions already covered last time: {', '.join(str(n) for n in done)}. "
+                f"After consent, RESUME the interview from question {nxt} — do not re-ask "
+                f"the covered ones (confirm briefly only if needed).")
+    except Exception as e:
+        logger.warning(f"resume hint lookup failed: {e}")
+        return ""
+
+
+def _missed_trigger(first_name, when, agent_reason):
     """Trigger for the headline case: we tried them, failed, and they called back."""
     if first_name:
+        rule = _IDENTITY_RULE.format(who=first_name)
         return (
-            f"[INBOUND CALL-BACK: {first_name} is calling US back — we tried calling them "
-            f"{when} but {agent_reason}. Open with, in your own warm words keeping every fact: "
-            f'"Hi {first_name}! Thanks for calling back — I tried reaching you {when} on behalf '
-            f'of EO Gujarat about the upcoming event, {member_line}." Then continue straight '
-            f"into THE INVITATION. Do NOT ask who they are, do NOT say \"am I speaking to…?\", "
-            f"and mention the missed call only this once.]"
+            f"[INBOUND CALL-BACK: this number belongs to {first_name}, a Canny contract "
+            f"employee we tried calling {when} but {agent_reason}. {rule} Once {first_name} "
+            f"is confirmed on the line: thank them for calling back, then give PURPOSE & "
+            f"CONSENT and begin THE INTERVIEW. Mention the missed call only once.]"
         )
     return (
-        f"[INBOUND CALL-BACK: the caller is a member we tried calling {when} but "
-        f"{agent_reason}. You were NOT given their name — never invent one. Open with, in "
-        f'your own warm words: "Hello! Thanks for calling back — I tried reaching you {when} '
-        f'on behalf of EO Gujarat about the upcoming event, {member_line}." Then continue '
-        f"straight into THE INVITATION, and mention the missed call only this once.]"
+        f"[INBOUND CALL-BACK: the caller's number matches a Canny contract employee we "
+        f"tried calling {when} but {agent_reason}. You were NOT given their name — never "
+        f"invent one. Greet politely, say you're calling on behalf of Canny management, "
+        f"and ask who is speaking. Only once they identify themselves as the employee we "
+        f"tried to reach: thank them for calling back, then PURPOSE & CONSENT and THE "
+        f"INTERVIEW. No incident content before that.]"
     )
 
 
@@ -107,12 +146,14 @@ def build(raw_from, now=None):
     out["name"] = first_name
 
     if not cc:
-        if first_name:  # in the member directory, but never part of a campaign
+        if first_name:  # in the employee roster, but never part of a screening campaign
+            rule = _IDENTITY_RULE.format(who=first_name)
             out["trigger"] = (
-                f"[INBOUND CALL: {first_name} is calling the EO Gujarat number. Greet them "
-                f'warmly by name — "Hi {first_name}!" — say you\'re speaking on behalf of EO '
-                f"Gujarat, and ask how you can help with the event. Continue with THE "
-                f"INVITATION if they're interested. Do NOT claim we called them.]"
+                f"[INBOUND CALL: this number matches {first_name} on the Canny employee "
+                f"roster, but no screening call is on record for them. {rule} Once "
+                f"confirmed, say you're speaking on behalf of Canny management and ask "
+                f"how you can help. Do NOT claim we called them, and do NOT start an "
+                f"interview that isn't scheduled for them.]"
             )
         return out
 
@@ -120,54 +161,61 @@ def build(raw_from, now=None):
     outcome = str(cc.get("rsvp_outcome") or "").strip().lower()
     attempts = int(cc.get("attempts") or 0)
     when = _when_phrase(cc.get("last_attempt_at"), now=now)
-    who = first_name or "the caller"
+    who = first_name or "the employee"
+    rule = _IDENTITY_RULE.format(who=who)
 
     if outcome == "voicemail":
-        out["trigger"] = _missed_trigger(
-            first_name, when,
-            agent_reason="only reached their voicemail",
-            member_line="but I'm afraid it went to your voicemail")
+        out["trigger"] = (
+            f"[INBOUND CALL-BACK: this number belongs to {who}, a Canny contract employee. "
+            f"We tried calling {when} and left a brief voicemail asking them to call back. "
+            f"{rule} Once confirmed: thank them for returning the call, then give PURPOSE & "
+            f"CONSENT and begin THE INTERVIEW.]"
+        )
     elif outcome == "yes":
         out["trigger"] = (
-            f"[INBOUND CALL: {who} is calling us and has ALREADY RSVP'd YES for the event. "
-            f"Thank them warmly for calling, let them know they're on the list for the "
-            f"evening, and ask how you can help. Do NOT re-invite and do NOT re-record — "
-            f"only call record_rsvp again if they clearly change their answer.]"
+            f"[INBOUND CALL: this number belongs to {who}, whose screening interview is "
+            f"ALREADY COMPLETED. {rule} Once confirmed: thank them for calling, tell them "
+            f"their interview is already on record and nothing more is needed from them, "
+            f"answer brief practical questions per WHAT YOU KNOW, and close politely. "
+            f"Do NOT redo the interview and do NOT re-record — only call record_interview "
+            f"again if something genuinely new must be noted.]"
         )
     elif outcome == "no":
         out["trigger"] = (
-            f"[INBOUND CALL: {who} is calling us; they had earlier DECLINED the event "
-            f"invitation. Thank them warmly for calling and ask how you can help. Don't "
-            f"push the invitation — but if they say they've changed their mind and can now "
-            f"join, delightedly record the new \"yes\".]"
+            f"[INBOUND CALL: this number belongs to {who}, who had earlier DECLINED to "
+            f"participate in the screening interview. {rule} Once confirmed: thank them "
+            f"for calling and ask how you can help. Do NOT pressure them — but if they "
+            f"say they now wish to give their side, give PURPOSE & CONSENT and run the "
+            f"full INTERVIEW, and record the new outcome.]"
         )
     elif outcome == "callback":
+        resume = _resume_hint(cc)
         out["trigger"] = (
-            f"[INBOUND CALL-BACK: {who} is calling US back — they had earlier asked us to "
-            f"call them back about the event. Thank them warmly for calling in ("
-            f'"so glad you called!"), then continue straight into THE INVITATION. Do NOT '
-            f"ask who they are.]"
+            f"[INBOUND CALL-BACK: this number belongs to {who}, who had asked us to call "
+            f"back about the screening interview (or the last interview was left "
+            f"incomplete). {rule} Once confirmed: thank them for calling in, then give "
+            f"PURPOSE & CONSENT and continue THE INTERVIEW.{resume}]"
         )
     elif outcome == "do_not_contact":
         out["trigger"] = (
-            f"[INBOUND CALL: {who} is calling us. NOTE: they had asked not to be contacted "
-            f"again — but THEY called US, so simply be warm and helpful and answer their "
-            f"questions. Do NOT pitch the invitation unless they themselves ask to attend.]"
+            f"[INBOUND CALL: this number belongs to {who}. NOTE: they had asked not to be "
+            f"contacted again — but THEY called US, so simply be polite and helpful and "
+            f"answer their questions per WHAT YOU KNOW. {rule} Do NOT start the interview "
+            f"unless they themselves clearly ask to give their statement now.]"
         )
     elif outcome == "wrong_number":
-        out["trigger"] = UNKNOWN_TRIGGER   # number was confirmed not the member's
+        out["trigger"] = UNKNOWN_TRIGGER   # number was confirmed not the employee's
         out["name"] = ""
         out["campaign_id"] = None
     elif attempts > 0:
         out["trigger"] = _missed_trigger(
             first_name, when,
-            agent_reason="could not reach them",
-            member_line="but I believe you were unavailable")
+            agent_reason="could not reach them")
     else:
         out["trigger"] = (
-            f"[INBOUND CALL: {who} is calling the EO Gujarat number. They're on our list "
-            f"for the event invitation but we had NOT called them yet — so do NOT claim we "
-            f"tried calling. Greet warmly, say you're speaking on behalf of EO Gujarat, and "
-            f"continue with THE INVITATION.]"
+            f"[INBOUND CALL: this number belongs to {who}, who is on the screening list "
+            f"but we had NOT called them yet — so do NOT claim we tried calling. {rule} "
+            f"Once confirmed: say you're calling on behalf of Canny management about an "
+            f"official matter, give PURPOSE & CONSENT, and begin THE INTERVIEW.]"
         )
     return out

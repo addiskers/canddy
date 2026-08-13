@@ -1,9 +1,11 @@
 """
-Single outbound-call entry point (Plivo).
+Single outbound-call entry point (multi-provider: Plivo + EnableX).
 
-Used by BOTH the /call-me admin button and the auto-callback scheduler, so the dial
-logic lives in exactly one place. `place_call()` runs the blocking Plivo SDK call in a
-thread executor and returns a structured dict — it never raises for normal API errors.
+Used by the /call-me admin button, the campaign runner and the auto-callback
+scheduler, so the dial logic lives in exactly one place. `place_call()` runs the
+blocking provider SDK/REST call in a thread executor and returns a structured dict —
+it never raises for normal API errors. The provider is chosen per call (the campaign
+owner's user setting); when none is given, EO_DEFAULT_PROVIDER decides (default plivo).
 """
 
 import asyncio
@@ -42,26 +44,94 @@ def _place_call_sync(to_number, answer_url):
         resp.get("request_uuid") if isinstance(resp, dict) else None)
 
 
-async def place_call(to_number, *, base_url=None, request=None, gen=0, origin_call_id=None,
-                     name="", campaign_id=None):
-    """
-    Place one outbound Plivo call that bridges to the agent.
+# EnableX (developer.enablex.io/voice): outbound via REST, media over their
+# bidirectional WebSocket stream (same base64 mulaw/8k frames as Plivo).
+# NOTE: payload/response field names to be verified against the pinned EnableX docs
+# before first live use (phase C of the rollout) — guarded so Plivo is never affected.
 
-    Returns {"success": True, "call_uuid": ..., "to": ...} or {"error": "..."}.
-    `gen` / `origin_call_id` are threaded into the answer_url so a re-dialed call
+def _enablex_headers():
+    import base64
+    tok = base64.b64encode(
+        f"{os.getenv('ENABLEX_APP_ID', '')}:{os.getenv('ENABLEX_APP_KEY', '')}".encode()).decode()
+    return {"Authorization": f"Basic {tok}", "Content-Type": "application/json"}
+
+
+def _enablex_api(path):
+    base = (os.getenv("ENABLEX_API_BASE", "https://api.enablex.io/voice/v1") or "").rstrip("/")
+    return f"{base}{path}"
+
+
+def _place_call_sync_enablex(to_number, stream_wss_url):
+    import json as _json
+    import urllib.request
+    payload = {
+        "from": os.getenv("ENABLEX_FROM_NUMBER", ""),
+        "to": to_number,
+        "action_on_connect": {
+            "stream": {"url": stream_wss_url, "bidirectional": True},
+        },
+    }
+    req = urllib.request.Request(_enablex_api("/call"), data=_json.dumps(payload).encode(),
+                                 headers=_enablex_headers(), method="POST")
+    with urllib.request.urlopen(req, timeout=30) as r:
+        body = _json.loads(r.read().decode() or "{}")
+    result = body.get("result") if isinstance(body.get("result"), dict) else {}
+    return body.get("voice_id") or body.get("call_id") or result.get("voice_id")
+
+
+async def place_call(to_number, *, base_url=None, request=None, gen=0, origin_call_id=None,
+                     name="", campaign_id=None, provider=None):
+    """
+    Place one outbound call (Plivo or EnableX) that bridges to the agent.
+
+    Returns {"success": True, "call_uuid": ..., "to": ..., "provider": ...} or {"error": "..."}.
+    `gen` / `origin_call_id` are threaded into the answer/stream URL so a re-dialed call
     knows it is a callback (used by the scheduler to cap callback generations).
     `name`, when given, personalises the agent's greeting for this call.
+    `provider` comes from the campaign owner's user setting; None → EO_DEFAULT_PROVIDER.
     """
     if not to_number:
         return {"error": "Missing 'to' number"}
-    if not os.getenv("PLIVO_AUTH_ID") or not os.getenv("PLIVO_AUTH_TOKEN"):
-        return {"error": "Plivo credentials not configured"}
-    if not os.getenv("PLIVO_FROM_NUMBER"):
-        return {"error": "PLIVO_FROM_NUMBER not configured"}
+    provider = (provider or os.getenv("EO_DEFAULT_PROVIDER", "plivo") or "plivo").strip().lower()
+    if provider not in ("plivo", "enablex"):
+        logger.warning(f"Unknown provider '{provider}'; falling back to plivo")
+        provider = "plivo"
 
     base = _base_url(base_url=base_url, request=request)
     if not base:
         return {"error": "No PUBLIC_URL configured; cannot build answer_url"}
+
+    if provider == "enablex":
+        if not os.getenv("ENABLEX_APP_ID") or not os.getenv("ENABLEX_APP_KEY"):
+            return {"error": "EnableX credentials not configured (ENABLEX_APP_ID/ENABLEX_APP_KEY)"}
+        if not os.getenv("ENABLEX_FROM_NUMBER"):
+            return {"error": "ENABLEX_FROM_NUMBER not configured"}
+        # Context rides the stream URL's query params — the /enablex/media-stream WS
+        # handler reads them directly (EnableX has no Plivo-style answer_url fetch).
+        wss_base = base.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
+        stream_url = f"{wss_base}/enablex/media-stream?caller={quote(to_number)}"
+        if name:
+            stream_url += f"&name={quote(str(name))}"
+        if gen:
+            stream_url += f"&gen={int(gen)}"
+        if origin_call_id:
+            stream_url += f"&origin={quote(str(origin_call_id))}"
+        if campaign_id:
+            stream_url += f"&campaign={int(campaign_id)}"
+        try:
+            loop = asyncio.get_running_loop()
+            voice_id = await loop.run_in_executor(
+                None, _place_call_sync_enablex, to_number, stream_url)
+            logger.info(f"Outbound EnableX call initiated: {voice_id} to {to_number} (gen={gen})")
+            return {"success": True, "call_uuid": voice_id, "to": to_number, "provider": "enablex"}
+        except Exception as e:
+            logger.error(f"Failed to initiate EnableX call to {to_number}: {e}")
+            return {"error": str(e)}
+
+    if not os.getenv("PLIVO_AUTH_ID") or not os.getenv("PLIVO_AUTH_TOKEN"):
+        return {"error": "Plivo credentials not configured"}
+    if not os.getenv("PLIVO_FROM_NUMBER"):
+        return {"error": "PLIVO_FROM_NUMBER not configured"}
 
     answer_url = f"{base}/plivo/answer?caller={quote(to_number)}"
     if name:
@@ -78,7 +148,7 @@ async def place_call(to_number, *, base_url=None, request=None, gen=0, origin_ca
         request_uuid = await loop.run_in_executor(
             None, _place_call_sync, to_number, answer_url)
         logger.info(f"Outbound Plivo call initiated: {request_uuid} to {to_number} (gen={gen})")
-        return {"success": True, "call_uuid": request_uuid, "to": to_number}
+        return {"success": True, "call_uuid": request_uuid, "to": to_number, "provider": "plivo"}
     except Exception as e:
         logger.error(f"Failed to initiate Plivo call to {to_number}: {e}")
         return {"error": str(e)}
@@ -90,17 +160,32 @@ def _hangup_sync(call_uuid):
     client.calls.delete(call_uuid)
 
 
-async def hangup_call(call_uuid):
-    """Hang up a live Plivo call by its CallUUID (Plivo Hangup API)."""
+def _hangup_sync_enablex(call_uuid):
+    import urllib.request
+    req = urllib.request.Request(_enablex_api(f"/call/{call_uuid}"),
+                                 headers=_enablex_headers(), method="DELETE")
+    with urllib.request.urlopen(req, timeout=15):
+        pass
+
+
+async def hangup_call(call_uuid, provider="plivo"):
+    """Hang up a live call by its provider call id (Plivo CallUUID / EnableX voice_id)."""
     if not call_uuid:
         return {"error": "no call_uuid"}
-    if not os.getenv("PLIVO_AUTH_ID") or not os.getenv("PLIVO_AUTH_TOKEN"):
-        return {"error": "Plivo credentials not configured"}
+    provider = (provider or "plivo").strip().lower()
+    if provider == "enablex":
+        if not os.getenv("ENABLEX_APP_ID") or not os.getenv("ENABLEX_APP_KEY"):
+            return {"error": "EnableX credentials not configured"}
+        sync_fn = _hangup_sync_enablex
+    else:
+        if not os.getenv("PLIVO_AUTH_ID") or not os.getenv("PLIVO_AUTH_TOKEN"):
+            return {"error": "Plivo credentials not configured"}
+        sync_fn = _hangup_sync
     try:
         loop = asyncio.get_running_loop()
         await asyncio.wait_for(
-            loop.run_in_executor(None, _hangup_sync, call_uuid), timeout=15)
-        logger.info(f"Hung up Plivo call {call_uuid}")
+            loop.run_in_executor(None, sync_fn, call_uuid), timeout=15)
+        logger.info(f"Hung up {provider} call {call_uuid}")
         return {"success": True}
     except asyncio.TimeoutError:
         logger.warning(f"Hangup timed out for {call_uuid}")

@@ -1,81 +1,135 @@
-# EO Gujarat — "An Evening with GvoxAi" (Gemini Live voice demo)
+# Tring Tring AI
 
-A real-time **voice demo** built on the Gemini Live API ([Google Gen AI Python SDK](https://github.com/googleapis/python-genai)
-backend + vanilla-JS frontend). **GvoxAi**, an AI host with a warm female **Indian-English** voice,
-calls a guest and personally invites their spouse to **the Spousal Forum's first spousal event of
-the year (hosted by the Queen Bees) in Ahmedabad on Saturday, the 8th of August**. The guest answers **"Yes"** or **"No"** out loud; GvoxAi responds and her RSVP is captured
-live on screen. Calls can run **in the browser** or be placed to a **real phone via Twilio**.
+**Tring Tring AI** is an AI phone interviewer built for **Canny Management Services** to screen its
+**61 contract employees** about the **6 August 2026 collective work stoppage** at client **Baoxhin**
+(the phone-storage policy protest). The agent conducts a **20-question structured interview** over a
+real phone call — **Hindi-first**, mirroring the employee into **Gujarati or English** when they
+switch — and records a per-question progress trail during the call.
 
-The FastAPI backend proxies the browser/phone WebSocket to Gemini, records each call, and tracks
-token + Twilio cost on an admin dashboard.
+After each completed phone interview, a **post-call scoring pipeline** produces a structured
+assessment: a **0–100 score across 6 rubric categories**, a **red-flag level**
+(None / Moderate / Critical), a **review status**, an involvement classification, and **verbatim
+evidence quotes** from the transcript.
 
-## Quick Start
+> **Every result is an input to human review. The AI never decides employment outcomes.**
+> `human_review_required` is forced true in code on every assessment; scores, flags and statuses
+> exist to prioritise and support reviewers at Canny and Baoxhin, not to replace them.
+
+## Architecture
+
+- **FastAPI** backend + **Gemini Live** realtime voice (via the [`google-genai`](https://github.com/googleapis/python-genai) Python SDK).
+- **Plivo** bidirectional audio streaming for real phone calls (`/plivo/*` webhooks + media WebSocket).
+- **Browser test console** at `/` (vanilla JS, WebSocket `/ws`) — internal testing only, gated by `EO_DEMO_ENABLED`.
+- **Admin SPA** at `/admin` (React, built into `admin/dist`) — campaigns, call logs, call drawer with
+  recording playback, assessment review panel.
+- **Call store**: JSON call records under `DATA_DIR/calls/` + **SQLite `eo.db`** (users, contacts,
+  campaigns) in the same `DATA_DIR`.
+- **Campaign runner + callback scheduler**: outbound dial pacing, calling-hours window, and automatic
+  re-dials — an **incomplete interview is re-dialed and resumes from question N** using the saved
+  per-question progress of the original call.
+- **Interview tools**: the model calls `record_interview` (final outcome) and a silent
+  `mark_question` (per-question status: answered / partial / declined / dont_know / skipped, with a
+  one-line gist) during the call.
+- **Post-call scoring pipeline** in `assessment.py`: eligibility gating, scheduling with bounded
+  concurrency, a Gemini text-model scoring pass, strict result validation, evidence-quote
+  verification against the transcript, and retry/failure accounting.
+
+## Quick start
 
 ```bash
-# 1. Create a virtual environment and install dependencies
-uv venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-uv pip install -r requirements.txt
+# 1. Python deps
+pip install -r requirements.txt
 
-# 2. Set your Gemini API key (a .env file is easiest — see .env.example)
-echo "GEMINI_API_KEY=your_api_key_here" > .env
+# 2. Build the admin SPA (Node 18+)
+cd admin && npm install && npm run build && cd ..
 
-# 3. Start the server
-uv run main.py
+# 3. Configure — copy the annotated example and fill in real values
+cp .env.example .env
 
-# 4. Open the demo and click "Start the call" (allow the microphone)
-#    http://localhost:8000
+# 4. Run (single worker required — in-process schedulers)
+uvicorn main:app --port 8000
 ```
 
-## How the demo works
+At minimum set `GEMINI_API_KEY`; for phone calls set the `PLIVO_*` values and a public `PUBLIC_URL`
+so Plivo can reach `/plivo/answer`.
 
-1. **Invite screen** — a branded EO Gujarat card. Click **Start the call** (browser), or enter a
-   number and **Get GvoxAi to call your phone** (Twilio).
-2. **GvoxAi greets first** — on connect she opens with her invitation and asks if she'll see you on
-   the 8th.
-3. **You answer by voice** — GvoxAi replies warmly for *Yes* / graciously for *No*, and silently
-   calls the `record_rsvp` tool.
-4. **Live RSVP card + transcript + a glowing "GvoxAi" orb** update in real time.
-5. **Call summary** — the end screen shows the decision, duration and full transcript.
+## Interview flow
 
-## Customising
+1. **Identity check** — the agent opens in polite Hindi, confirms it is speaking with the named
+   employee (roster: `data/employees.csv` — phone, first name, employee ID), and states it is
+   calling on behalf of Canny management.
+2. **Consent + language** — the employee can refuse (recorded as `no`), ask for a callback, or
+   continue in Hindi / Gujarati / English.
+3. **20 structured questions** about the 6 Aug 2026 stoppage — each answer is silently marked via
+   `mark_question`; interviews interrupted mid-way are called back and resume from question N.
+4. **Outcome recorded** via `record_interview` — completed / refused / callback / voicemail /
+   do-not-contact / wrong number.
+5. **Post-call assessment** (phone interviews meeting the eligibility bar) is scored and queued for
+   human review.
 
-| What | Where |
+### Assessment rubric (100 points)
+
+| Category | Points |
 | --- | --- |
-| GvoxAi's persona / script | `SYSTEM_INSTRUCTION` in `gemini_live.py` |
-| Voice (default **Aoede**, female) | `EO_VOICE_NAME` env (e.g. `Aoede`, `Kore`, `Leda`) — read in `gemini_live.py` `start_session` |
-| Accent / language (default **en-IN**) | `language_code=` in `gemini_live.py` |
-| Model id | `MODEL` in `.env` (default `gemini-3.1-flash-live-preview`) |
-| RSVP tool | `record_rsvp` in `gemini_live.py` (declaration) + `handle_record_rsvp` in `main.py` |
-| Event details (date/city/host) | `frontend/index.html` + `EVENT` in `main.py` |
-| Branding / theme | `frontend/index.html`, `frontend/style.css` (gold-on-navy "evening" palette) |
+| Involvement in the stoppage | 30 |
+| Conduct during the incident | 20 |
+| Accountability / honesty | 20 |
+| Future compliance | 15 |
+| Communication | 10 |
+| Overall suitability | 5 |
+
+- **Red-flag levels**: `None`, `Moderate`, `Critical`.
+- **Review statuses**: `Further consideration`, `Canny review`, `Baoxhin review`,
+  `Critical human review`.
+- Each assessment carries an involvement classification (passive → organiser/instigator bands),
+  a summary, and **evidence quotes verified against the transcript**.
+
+### Review workflow
+
+- **Admin call drawer** (`/admin`) shows the assessment panel per call: score, category breakdown,
+  red flag, review status, evidence — with reviewer overrides (`PATCH /api/eo/calls/{id}/review`)
+  that keep the original values alongside the edit audit (`edited_by` / `edited_at`).
+- **Campaign ranking**: `GET /api/eo/campaigns/{id}/ranking` sorts by concern or score
+  (`?sort=concern|score_desc|score_asc`) and exports CSV (`?format=csv`). The call-log CSV export
+  includes Score / Red flag / Review status / Involvement / Assessment columns.
+- Manual (re)scoring: `POST /api/eo/calls/{id}/assess` and `POST /api/eo/campaigns/{id}/assess`.
 
 ## Endpoints
 
 | Route | Purpose |
 | --- | --- |
-| `GET /` | The invite / call UI |
-| `WS /ws` | Browser call (proxied to Gemini Live) |
-| `POST /call-me` | Place an outbound Twilio call to a phone number |
-| `GET/POST /twilio/voice`, `WS /twilio/media-stream` | Twilio phone-call bridge |
+| `GET /` | Internal browser **test console** — only when `EO_DEMO_ENABLED=true`, else redirects to `/admin/` |
+| `WS /ws` | Browser test call (proxied to Gemini Live) |
+| `GET /admin` | Admin SPA (per-user login) — campaigns, contacts, call logs, assessment review |
+| `GET /superadmin` | Legacy cost/transcript dashboard (shared key `ANALYTICS_SECRET`) |
 | `GET /live`, `WS /live/ws` | Live transcript viewer for phone calls |
-| `GET /admin` (+ `/api/admin/*`) | Call logs + token/Twilio cost (key = `ANALYTICS_SECRET`) |
+| `POST /call-me` | Place an outbound phone call |
+| `GET/POST /plivo/*` | Plivo answer/hangup webhooks + media stream WebSocket |
+| `GET/POST /api/eo/*` | Admin API — highlights: `POST /api/eo/calls/{id}/assess`, `POST /api/eo/campaigns/{id}/assess`, `GET /api/eo/campaigns/{id}/ranking`, `PATCH /api/eo/calls/{id}/review`, CSV exports |
+| `GET /api/admin/*` | Legacy superadmin API (`X-Admin-Key`) |
 
 ## Configuration
-Set values via environment variables or a `.env` file (see `.env.example`). At minimum set
-`GEMINI_API_KEY`. For the phone path, set the `TWILIO_*` values and a public `PUBLIC_URL` so Twilio
-can reach `/twilio/voice`.
 
-## Project structure
-```
-/
-├── main.py            # FastAPI server: /ws, Twilio, /call-me, /live, /admin, EVENT data + record_rsvp
-├── gemini_live.py     # Gemini Live wrapper: GvoxAi persona, record_rsvp tool, voice/accent
-├── recorder.py        # Per-call recording (RSVP outcome flag)
-├── store.py, pricing.py, twilio_handler.py
-└── frontend/
-    ├── index.html     # Invite / call / summary UI
-    ├── style.css      # EO Gujarat "evening" theme
-    ├── main.js        # App flow: orb, RSVP, transcript, Twilio "call me"
-    ├── gemini-client.js, media-handler.js, pcm-processor.js   # transport (unchanged)
-```
+All settings live in **`.env.example`** (annotated) — copy it to `.env` and fill in real values.
+Notable settings:
+
+- `TT_LANGUAGE_CODE` (default `hi-IN`) — TTS pronunciation bias for the Hindi-first interview.
+- `TT_ASSESSMENT_*` — the scoring pipeline: `TT_ASSESSMENT_ENABLED` (explicit opt-in),
+  `TT_ASSESSMENT_MODEL`, `TT_ASSESSMENT_MIN_SECONDS`, `TT_ASSESSMENT_MAX_CONCURRENT`,
+  `TT_ASSESSMENT_MAX_ATTEMPTS`, `TT_ASSESSMENT_TIMEOUT_S`, `TT_ASSESS_BROWSER`.
+- `CALL_MAX_SECONDS=1200` — a full 20-question Hindi interview runs ~12–15 minutes; keep
+  `EO_RECORD_MAX_SECONDS` equal to it or recordings get truncated.
+- `EO_DEMO_ENABLED` — gates the `/` test console (keep `false` in production).
+
+## Deploy
+
+See **[EO_ADMIN_DEPLOY.md](EO_ADMIN_DEPLOY.md)** — Docker Compose service, Caddy TLS, env checklist,
+and the single-worker requirement.
+
+## Internal naming
+
+Legacy `eo_` / `rsvp_` identifiers — Python module names, the `/api/eo` API prefix, `eo.db`, the
+`eo-data` volume, `EO_*` env var names, and stored JSON fields like `rsvp_outcome_status` /
+`booking_created` — are **intentional**: renaming them would break stored data, API contracts and
+deployments. The rebrand to Tring Tring AI is applied at the display layer only (UI labels, docs,
+prompts), which is fully rebranded.

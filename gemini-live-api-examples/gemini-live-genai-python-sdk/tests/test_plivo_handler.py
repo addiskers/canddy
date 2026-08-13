@@ -73,43 +73,48 @@ def test_meansquare_zero_for_silence_high_for_speech():
     assert _mulaw_frame_meansquare(loud) > 250_000
 
 
-# Goodbye heuristics
+# Goodbye heuristics (Hindi-first interview: matchers must handle native script)
 
 def test_looks_like_goodbye():
     assert _looks_like_goodbye("okay bye") is True
     assert _looks_like_goodbye("thank you") is True
+    assert _looks_like_goodbye("धन्यवाद, रखता हूँ") is True                 # Hindi sign-off
+    assert _looks_like_goodbye("ठीक है") is False       # conservative — common mid-interview ack
     assert _looks_like_goodbye("bye, but what time is it?") is False       # real follow-up
     assert _looks_like_goodbye("thanks a lot for calling me today about this event") is False  # too long
     assert _looks_like_goodbye("") is False
 
 
 def test_has_closing_repeat_detects_doubled_closing():
-    assert _has_closing_repeat("see you on the tenth! ... see you on the tenth!") is True
-    assert _has_closing_repeat("lovely, see you on the tenth then") is False
-    # Real failure: paraphrased double-invite with "count you in" / "sorry about that" twice
+    assert _has_closing_repeat("aapke jawab note ho gaye hain dhanyavaad "
+                               "aapke jawab note ho gaye hain dhanyavaad") is True   # 5-gram repeat
+    assert _has_closing_repeat("thank you for your time, goodbye") is False
+    # Doubled Devanagari closing in ONE turn — pins the Unicode-aware normalisation:
+    # the old [^a-z0-9 ] scrub stripped ALL Devanagari and left this guard dead on Hindi calls.
+    assert _has_closing_repeat(
+        "आपके जवाब दर्ज हो गए हैं और आगे की जानकारी management देगा ... "
+        "आपके जवाब दर्ज हो गए हैं और आगे की जानकारी management देगा"
+    ) is True
+    # A single Hindi closing must NOT read as a repeat
+    assert _has_closing_repeat("आपके जवाब दर्ज हो गए हैं, धन्यवाद") is False
+    # Real failure mode kept from production: paraphrased double-apology/intro in one turn
     doubled = (
-        "Oh, sorry about that! Let me try again. We're hosting an evening with "
-        "Raghav Chadha. Can we count you in for that? Oh, sorry about that! Yes, "
-        "I was just calling from EO Gujarat. Can we count you in?"
+        "Oh, sorry about that! Let me try again. I am calling on behalf of Canny "
+        "management about an official matter. Oh, sorry about that! Yes, I was "
+        "calling on behalf of Canny management."
     )
     assert _has_closing_repeat(doubled) is True
-    # 5-word verbatim run repeating inside one turn
+    # English closing marker voiced twice ("thank you for your time")
     assert _has_closing_repeat(
-        "can we count you in now can we count you in please"
+        "thank you for your time. your answers will go to management. "
+        "thank you for your time, goodbye."
     ) is True
-    # Live failure: two closings glued — "see you on thirty" / "so glad to have you"
-    live_double = (
-        "Oh wonderful so glad to have you there! You'll receive all the details "
-        "on your WhatsApp shortly. See you on thirty first Oh lovely! So glad "
-        "you'll be there. You'll receive all the details on your WhatsApp shortly. "
-        "See you on thirty first!"
-    )
-    assert _has_closing_repeat(live_double) is True
 
 
 def test_looks_like_agent_question():
-    assert _looks_like_agent_question("But could we still count you and your spouse in?") is True
-    assert _looks_like_agent_question("Would you be able to make it?") is True
+    assert _looks_like_agent_question("क्या आप सुन रहे हैं?") is True       # Hindi still-there check
+    assert _looks_like_agent_question("Could you explain what happened after that?") is True
+    assert _looks_like_agent_question("Are you still there?") is True
     assert _looks_like_agent_question("Oh wonderful, so glad you'll be there!") is False
     assert _looks_like_agent_question("") is False
 
@@ -128,12 +133,11 @@ def test_repeat_suppress_flushes_queued_playout():
         b._residual.extend(b"\xaa" * 40)
         # Drive the gemini-event path that arms suppress + flush
         b._turn_text = ""
-        # Simulate accumulating the live doubled closing via gemini text events
+        # Simulate accumulating a doubled Hindi closing via gemini text events
         event = {"type": "gemini", "text": (
-            "Oh wonderful so glad to have you there! You'll receive all the details "
-            "on your WhatsApp shortly. See you on thirty first Oh lovely! So glad "
-            "you'll be there. You'll receive all the details on your WhatsApp shortly. "
-            "See you on thirty first!"
+            "आपके जवाब दर्ज हो गए हैं और आगे की जानकारी management देगा। "
+            "आपके समय के लिए धन्यवाद। आपके जवाब दर्ज हो गए हैं और आगे की "
+            "जानकारी management देगा। आपके समय के लिए धन्यवाद।"
         )}
         # Inline the same logic _gemini_loop uses for gemini events
         b._turn_open = True
@@ -151,8 +155,8 @@ def test_repeat_suppress_flushes_queued_playout():
     assert asyncio.run(run()) is True
 
 
-def test_post_rsvp_closing_schedules_muted_hangup():
-    """After record_rsvp + a spoken closing turn_complete, hang up muted so bare Hello can't re-engage."""
+def test_post_record_closing_schedules_muted_hangup():
+    """After record_interview + a spoken closing turn_complete, hang up muted so bare Hello can't re-engage."""
     async def run():
         b = _bridge()
         b.stream_id = "s1"
@@ -161,7 +165,7 @@ def test_post_rsvp_closing_schedules_muted_hangup():
         b._post_rsvp_hangup_armed = True
         b._spoke_since_user = True
         b._last_agent_audio = time.monotonic()
-        b._turn_text = "Oh wonderful, so glad you'll be there! See you on the thirty-first!"
+        b._turn_text = "आपके जवाब दर्ज हो गए हैं। आपके समय के लिए धन्यवाद।"
         # Mimic turn_complete branch
         b._last_agent_asked_question = _looks_like_agent_question(b._turn_text)
         assert b._last_agent_asked_question is False
@@ -323,7 +327,7 @@ def test_silence_nudge_fires_once_then_escalates(monkeypatch):
         return msgs
 
     msgs = asyncio.run(run())
-    still_there = [m for m in msgs if "still there" in m]
+    still_there = [m for m in msgs if "सुन रहे हैं" in m]     # Hindi are-you-still-there nudge
     wrapups = [m for m in msgs if "seems dead" in m]
     assert len(still_there) == 1, f"nudge must fire exactly once, got {msgs}"
     assert len(wrapups) == 1, f"expected one wrap-up escalation, got {msgs}"
@@ -506,7 +510,7 @@ def test_silence_nudge_fires_even_when_turn_open_flag_is_stuck(monkeypatch):
         msgs = []
         while not b.text_input_queue.empty():
             msgs.append(b.text_input_queue.get_nowait())
-        return [m for m in msgs if "still there" in m]
+        return [m for m in msgs if "सुन रहे हैं" in m]
 
     assert len(asyncio.run(run())) == 1
 
@@ -538,9 +542,61 @@ def test_silence_nudge_respects_cooldown_after_noise_reset(monkeypatch):
         msgs = []
         while not b.text_input_queue.empty():
             msgs.append(b.text_input_queue.get_nowait())
-        return [m for m in msgs if "still there" in m]
+        return [m for m in msgs if "सुन रहे हैं" in m]
 
     assert asyncio.run(run()) == []                   # cooldown blocks the re-ask
+
+
+# Post-record arming: ONLY the outcome tool arms end-of-call logic
+
+class _FakeGemini:
+    """Yields a scripted event stream through the real _gemini_loop plumbing."""
+
+    def __init__(self, events):
+        self._events = list(events)
+
+    async def start_session(self, **_kw):
+        for e in self._events:
+            yield e
+
+
+def test_mark_question_tool_call_never_arms_post_record_hangup():
+    async def run():
+        b = PlivoMediaBridge(FakeWS(), gemini_client=_FakeGemini([
+            {"type": "tool_call", "name": "mark_question",
+             "args": {"question_number": 3, "status": "answered"}, "result": {"success": True}},
+        ]), text_trigger="[go]")
+        await b._gemini_loop()
+        return b._rsvp_recorded, b._post_rsvp_hangup_armed
+    recorded, armed = asyncio.run(run())
+    assert recorded is False
+    assert armed is False
+
+
+def test_record_interview_tool_call_arms_post_record_hangup():
+    async def run():
+        b = PlivoMediaBridge(FakeWS(), gemini_client=_FakeGemini([
+            {"type": "tool_call", "name": "mark_question",
+             "args": {"question_number": 20, "status": "answered"}, "result": {"success": True}},
+            {"type": "tool_call", "name": "record_interview",
+             "args": {"outcome_status": "yes"}, "result": {"outcome_status": "yes"}},
+        ]), text_trigger="[go]")
+        await b._gemini_loop()
+        return b._rsvp_recorded, b._post_rsvp_hangup_armed
+    recorded, armed = asyncio.run(run())
+    assert recorded is True
+    assert armed is True
+
+
+def test_tool_sets_are_pinned():
+    """The bridge keys end-of-call logic on tool NAMES — pin them at the source."""
+    import gemini_live
+    assert {t["name"] for t in gemini_live.TOOLS} == {"record_interview", "mark_question", "end_call"}
+    assert gemini_live._ASYNC_TOOLS == {"record_interview", "mark_question"}
+    # the outcome enum the whole pipeline (validator/labels/CSV) relies on
+    tool = next(t for t in gemini_live.TOOLS if t["name"] == "record_interview")
+    assert tool["parameters"]["properties"]["outcome_status"]["enum"] == [
+        "yes", "no", "callback", "voicemail", "do_not_contact", "wrong_number"]
 
 
 # Bounded input queue: drop-oldest, never blocks

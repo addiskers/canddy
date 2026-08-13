@@ -81,11 +81,19 @@ class CallRecorder:
             if not call_sid:
                 call_sid = "web-" + uuid.uuid4().hex[:12]
             self._started_ts = datetime.now(timezone.utc)
+            employee_id = ""
+            if caller:
+                try:
+                    import directory
+                    employee_id = (directory.record_for(caller) or {}).get("employee_id", "")
+                except Exception:
+                    employee_id = ""
             self.call = {
                 "id": call_id,
                 "call_sid": call_sid,
                 "source": source,                 # 'plivo' | 'browser'
                 "caller": caller,
+                "employee_id": employee_id,        # roster ID for the assessment report ('' if unknown)
                 "campaign_id": campaign_id,        # None for demo/RSVP calls; set for campaign dials
                 "origin_call_id": origin_call_id,  # set only on a callback-RESULT call → back-links home
                 "generation": int(generation or 0),  # 0=original, n=nth auto-callback redial
@@ -158,6 +166,11 @@ class CallRecorder:
 
             await self._backpropagate_to_origin()
             await self._reconcile_inbound()
+            try:
+                import assessment
+                assessment.maybe_schedule(self.call)
+            except Exception as e:
+                logger.warning(f"assessment schedule failed: {e}")
         except Exception as e:
             logger.warning(f"CallRecorder.close failed: {e}")
 
@@ -274,21 +287,42 @@ class CallRecorder:
             "result": result,
             "ts": _now_iso(),
         })
-        if name == "record_rsvp" and isinstance(result, dict):
-            status = result.get("outcome_status") or ("yes" if result.get("attending") else "no")
-            # Reuse the existing booking_created flag so the admin dashboard keeps working.
-            if result.get("attending") or status == "yes":
+        if name == "mark_question" and isinstance(result, dict):
+            # Silent per-question progress — accumulates even on dropped calls so an
+            # incomplete interview still yields coverage, and callbacks can resume from N.
+            n = result.get("question_number")
+            if isinstance(n, int) and 1 <= n <= 20:
+                progress = self.call.setdefault("interview_progress", {})
+                progress[str(n)] = {
+                    "status": result.get("status") or "answered",
+                    "gist": result.get("gist") or "",
+                    "ts": _now_iso(),
+                }
+                self.call["interview_questions_completed"] = len(progress)
+            return
+        if name == "record_interview" and isinstance(result, dict):
+            status = result.get("outcome_status") or "callback"
+            # Reuse the existing booking_created flag ("interview completed") so the admin dashboard keeps working.
+            if status == "yes":
                 self.call["booking_created"] = True
             self.call["rsvp_outcome_status"] = status
             self.call["rsvp_callback_time_text"] = result.get("callback_time_text", "") or ""
             self.call["rsvp_do_not_contact"] = bool(result.get("do_not_contact"))
-            self.call["rsvp_accompanying_children"] = result.get("accompanying_children", "") or ""
             self.call["rsvp_note"] = result.get("note", "") or ""
+            self.call["interview_confirmed_identity"] = bool(result.get("employee_confirmed_identity"))
+            self.call["interview_refused"] = bool(result.get("refused_interview"))
+            if result.get("preferred_language"):
+                self.call["interview_language"] = result.get("preferred_language")
+            try:
+                qc = int(result.get("questions_completed") or 0)
+            except (TypeError, ValueError):
+                qc = 0
+            # The tool's own count never lowers what mark_question already accumulated.
+            if qc > int(self.call.get("interview_questions_completed") or 0):
+                self.call["interview_questions_completed"] = qc
             # The agent's note auto-fills the Remark; remark PATCH is blocked while in_progress, so this never clobbers a human edit
             if self.call["rsvp_note"]:
                 self.call["remark"] = self.call["rsvp_note"]
-            if result.get("guest_name"):
-                self.call["rsvp_guest_name"] = result.get("guest_name")
             if status == "callback":
                 self._schedule_callback(result)
             else:

@@ -10,7 +10,7 @@ export default function Users() {
   const [items, setItems] = useState([])
   const [err, setErr] = useState('')
   const [show, setShow] = useState(false)
-  const [f, setF] = useState({ username: '', name: '', password: '', role: 'eo_agent' })
+  const [f, setF] = useState({ username: '', name: '', password: '', role: 'eo_agent', provider: 'plivo' })
   const [formErr, setFormErr] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -23,7 +23,7 @@ export default function Users() {
     setBusy(true); setFormErr('')
     try {
       await api.post('/users', f)
-      setShow(false); setF({ username: '', name: '', password: '', role: 'eo_agent' }); load()
+      setShow(false); setF({ username: '', name: '', password: '', role: 'eo_agent', provider: 'plivo' }); load()
     } catch (e) { setFormErr(e.message) } finally { setBusy(false) }
   }
 
@@ -32,11 +32,16 @@ export default function Users() {
     catch (e) { alert(e.message) }
   }
 
+  async function setProvider(u, provider) {
+    try { await api.patch(`/users/${u.id}`, { provider }); load() }
+    catch (e) { alert(e.message) }
+  }
+
   return (
     <div className="stack">
       <PageHeader
         title="Users"
-        sub="Manage EO admin and agent accounts"
+        sub="Manage Tring Tring admin and agent accounts"
         actions={<button className="btn" onClick={() => { setFormErr(''); setShow(true) }}>+ Add User</button>}
       />
 
@@ -49,6 +54,7 @@ export default function Users() {
               <th className="no-sort">Username</th>
               <th className="no-sort">Name</th>
               <th className="no-sort">Role</th>
+              <th className="no-sort">Provider</th>
               <th className="no-sort">Status</th>
               <th className="no-sort">Created</th>
               <th className="no-sort">Actions</th>
@@ -56,12 +62,18 @@ export default function Users() {
           </thead>
           <tbody>
             {items.length === 0 ? (
-              <tr><td colSpan={6} className="empty">No users.</td></tr>
+              <tr><td colSpan={7} className="empty">No users.</td></tr>
             ) : items.map((u) => (
               <tr key={u.id}>
                 <td style={{ fontWeight: 600 }}>{u.username}{u.id === me?.id && <span className="muted"> (you)</span>}</td>
                 <td>{u.name || <span className="muted">—</span>}</td>
                 <td><span className={`pill ${u.role === 'eo_admin' ? 'green' : 'blue'}`}>{u.role === 'eo_admin' ? 'Superadmin' : 'Admin'}</span></td>
+                <td>
+                  <select value={u.provider || 'plivo'} onChange={(e) => setProvider(u, e.target.value)}>
+                    <option value="plivo">Plivo</option>
+                    <option value="enablex">EnableX</option>
+                  </select>
+                </td>
                 <td><span className={`pill ${u.active ? 'valid' : 'invalid'}`}>{u.active ? 'Active' : 'Disabled'}</span></td>
                 <td>{fmtDate(u.created_at)}</td>
                 <td>
@@ -78,7 +90,7 @@ export default function Users() {
       {show && (
         <Modal
           title="Add User"
-          sub="Create an EO admin or agent account"
+          sub="Create a Tring Tring admin or agent account"
           onClose={() => !busy && setShow(false)}
           footer={<>
             <button className="btn ghost" disabled={busy} onClick={() => setShow(false)}>Cancel</button>
@@ -93,6 +105,12 @@ export default function Users() {
             <select value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })}>
               <option value="eo_agent">Admin — their own campaigns &amp; logs only, no cost</option>
               <option value="eo_admin">Superadmin — full access, all data, cost, Users &amp; Settings</option>
+            </select>
+          </div>
+          <div className="row"><label>Provider</label>
+            <select value={f.provider} onChange={(e) => setF({ ...f, provider: e.target.value })}>
+              <option value="plivo">Plivo</option>
+              <option value="enablex">EnableX</option>
             </select>
           </div>
         </Modal>

@@ -182,6 +182,14 @@ async def _tick():
         cb["dialing_started_at"] = _iso(claim_now)
         await store.save_call(call)
         dialed += 1
+        # Redial with the campaign OWNER's provider; callbacks without a campaign use the default.
+        provider = None
+        if cb.get("campaign_id"):
+            try:
+                camp = eo_db.get_campaign(int(cb["campaign_id"]))
+                provider = eo_db.user_provider((camp or {}).get("created_by")) or None
+            except Exception:
+                provider = None
         try:
             res = await asyncio.wait_for(
                 dialer.place_call(
@@ -190,6 +198,7 @@ async def _tick():
                     gen=int(cb.get("generation", 1)),
                     origin_call_id=cb.get("origin_call_id") or call.get("id"),
                     campaign_id=cb.get("campaign_id"),
+                    provider=provider,
                 ),
                 timeout=_cfg_int("CALLBACK_DIAL_TIMEOUT", 60))
         except asyncio.TimeoutError:

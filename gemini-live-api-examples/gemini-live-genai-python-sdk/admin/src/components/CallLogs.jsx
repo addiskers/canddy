@@ -3,6 +3,7 @@ import { api, qs, getToken } from '../api.js'
 import { useAuth } from '../auth.jsx'
 import { IconSearch, IconDownload, IconPhone } from './icons.jsx'
 import RemarkCell from './RemarkCell.jsx'
+import AssessmentPanel from './AssessmentPanel.jsx'
 
 export function fmtDur(s) {
   s = Math.round(Number(s) || 0)
@@ -25,10 +26,31 @@ export function fmtCost(v) {
   return Number.isFinite(n) ? `$${n.toFixed(4)}` : '—'
 }
 
-const RSVP_OUTCOMES = [
-  ['yes', 'Attending'], ['no', 'Declined'], ['callback', 'Callback requested'],
+const OUTCOMES = [
+  ['yes', 'Interview completed'], ['no', 'Refused to participate'], ['callback', 'Callback requested'],
   ['voicemail', 'Voicemail'], ['do_not_contact', 'Do not contact'], ['wrong_number', 'Wrong number'],
 ]
+
+// Score pill: NN/100 colored by band, with a flag glyph when a red flag was raised.
+export function ScoreBadge({ score, redFlag }) {
+  if (score == null) return <span className="muted">—</span>
+  const cls = score >= 75 ? 'green' : score >= 50 ? 'amber' : 'red'
+  const flagged = redFlag && redFlag !== 'None'
+  return (
+    <span className={`pill ${cls}`}>
+      {score}/100
+      {flagged && (
+        <span
+          title={`${redFlag} red flag`}
+          style={{
+            color: redFlag === 'Critical' ? '#fca5a5' : 'var(--amber)',
+            fontWeight: redFlag === 'Critical' ? 800 : 600,
+          }}
+        >⚑</span>
+      )}
+    </span>
+  )
+}
 
 // Editable RSVP: shows the captured outcome; Edit → select + Save overwrites it
 // (PATCH /calls/{id}/outcome). Locked while the call is in progress.
@@ -59,7 +81,7 @@ function RsvpEditor({ call }) {
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           <select value={val} onChange={(e) => setVal(e.target.value)}>
             <option value="" disabled>Pick outcome…</option>
-            {RSVP_OUTCOMES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            {OUTCOMES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
           </select>
           <button className="btn sm" disabled={busy} onClick={save}>{busy ? '…' : 'Save'}</button>
           <button className="btn ghost sm" disabled={busy} onClick={() => { setEditing(false); setErr('') }}>Cancel</button>
@@ -72,7 +94,7 @@ function RsvpEditor({ call }) {
     <div>
       <span>{label}</span>
       <button className="btn ghost sm" style={{ marginLeft: 8 }} disabled={locked}
-        title={locked ? 'Available once the call ends' : 'Overwrite the captured RSVP'}
+        title={locked ? 'Available once the call ends' : 'Overwrite the captured outcome'}
         onClick={() => setEditing(true)}>Edit</button>
       {editedBy && <div className="muted" style={{ fontSize: '0.7rem', marginTop: 2 }}>edited by {editedBy}</div>}
     </div>
@@ -90,7 +112,7 @@ function StatusPill({ call }) {
 // Reusable call-logs panel. Pass `campaignId` to scope to one campaign.
 export default function CallLogs({ campaignId, title = 'Call Logs', showCampaignColumn = true, showSource = true }) {
   const { isAdmin } = useAuth()
-  const colCount = 8 + (showSource ? 1 : 0) + (showCampaignColumn ? 1 : 0) + (isAdmin ? 1 : 0)
+  const colCount = 9 + (showSource ? 1 : 0) + (showCampaignColumn ? 1 : 0) + (isAdmin ? 1 : 0)
   const [items, setItems] = useState([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -151,7 +173,7 @@ export default function CallLogs({ campaignId, title = 'Call Logs', showCampaign
       .then((b) => {
         const a = document.createElement('a')
         a.href = URL.createObjectURL(b)
-        a.download = 'call_logs.csv'
+        a.download = 'interview_logs.csv'
         a.click()
         URL.revokeObjectURL(a.href)
       })
@@ -196,7 +218,8 @@ export default function CallLogs({ campaignId, title = 'Call Logs', showCampaign
               {th('duration_seconds', 'Duration', 'num')}
               {th('language', 'Language')}
               {th('status', 'Status')}
-              <th className="no-sort">RSVP</th>
+              {th('assessment_score', 'Score')}
+              <th className="no-sort">Outcome</th>
               <th className="no-sort">Remark</th>
               {isAdmin && th('total_cost_usd', 'Cost', 'num')}
             </tr>
@@ -216,6 +239,7 @@ export default function CallLogs({ campaignId, title = 'Call Logs', showCampaign
                 <td className="num">{fmtDur(c.duration_seconds)}</td>
                 <td>{c.language || '—'}</td>
                 <td><StatusPill call={c} /></td>
+                <td><ScoreBadge score={c.assessment_score} redFlag={c.assessment_red_flag} /></td>
                 <td>{c.rsvp_outcome_label || c.rsvp_outcome_status || (c.booking_created ? 'yes' : '—')}</td>
                 <td onClick={(e) => e.stopPropagation()}>
                   <RemarkCell
@@ -239,7 +263,7 @@ export default function CallLogs({ campaignId, title = 'Call Logs', showCampaign
         <button disabled={(page + 1) * pageSize >= total} onClick={() => setPage((p) => p + 1)}>Next</button>
       </div>
 
-      {detail && <CallDrawer call={detail} onClose={() => setDetail(null)} />}
+      {detail && <CallDrawer call={detail} onClose={() => setDetail(null)} onReload={() => openDetail(detail)} />}
     </div>
   )
 
@@ -252,7 +276,7 @@ export default function CallLogs({ campaignId, title = 'Call Logs', showCampaign
   }
 }
 
-export function CallDrawer({ call, onClose }) {
+export function CallDrawer({ call, onClose, onReload }) {
   const { isAdmin } = useAuth()
   const msgs = call.messages || call.transcript || []
   const hasCost = isAdmin && (call.total_cost_usd != null || call.gemini_cost_usd != null)
@@ -274,7 +298,7 @@ export function CallDrawer({ call, onClose }) {
         <div className="sub">{fmtDate(call.started_at)} · {call.source} · {fmtDur(call.duration_seconds)}</div>
         <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', marginBottom: 14 }}>
           <div><label>Status</label><StatusPill call={call} /></div>
-          <div><label>RSVP</label><RsvpEditor key={call.id || call.call_sid} call={call} /></div>
+          <div><label>Outcome</label><RsvpEditor key={call.id || call.call_sid} call={call} /></div>
           {call.campaign_name && <div><label>Campaign</label>{call.campaign_name}</div>}
           {call.language && <div><label>Language</label>{call.language}</div>}
           <div style={{ gridColumn: '1 / -1' }}>
@@ -287,6 +311,13 @@ export function CallDrawer({ call, onClose }) {
             />
           </div>
         </div>
+        {call.assessment && (
+          <AssessmentPanel
+            key={`${callKey}:${call.assessment.status}:${call.assessment.scored_at || ''}`}
+            call={call}
+            onReload={onReload}
+          />
+        )}
         {call.callback && (
           <div className="card" style={{ marginBottom: 14, padding: 12 }}>
             <label>Callback</label>
@@ -325,8 +356,8 @@ export function CallDrawer({ call, onClose }) {
           {call._loading ? <div className="muted">Loading transcript…</div>
             : Array.isArray(msgs) && msgs.length ? msgs.map((m, i) => (
               <div key={i} style={{ fontSize: '0.82rem' }}>
-                <b style={{ color: (m.role === 'user' || m.speaker === 'user') ? 'var(--blue)' : 'var(--green)' }}>
-                  {(m.role || m.speaker) === 'user' ? 'Caller' : 'GvoxAi'}:
+                <b style={{ color: (m.role === 'user' || m.speaker === 'user') ? 'var(--blue)' : 'var(--accent)' }}>
+                  {(m.role || m.speaker) === 'user' ? 'Caller' : 'Tring Tring'}:
                 </b>{' '}
                 {m.text || m.content || m.transcript}
               </div>

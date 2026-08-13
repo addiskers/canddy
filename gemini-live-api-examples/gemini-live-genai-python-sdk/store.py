@@ -44,8 +44,10 @@ def has_recording(key: str) -> bool:
 _INDEX = {}
 _LOCK = threading.Lock()
 
-# Heavy fields excluded from the in-memory index.
-_HEAVY_FIELDS = ("transcript", "tool_calls")
+# Heavy fields excluded from the in-memory index. The full `assessment` block
+# (evidence quotes, coverage map) stays on disk; its headline values are promoted
+# to flat assessment_* fields by assessment.py so list views stay light.
+_HEAVY_FIELDS = ("transcript", "tool_calls", "assessment")
 
 
 def _meta_from_call(call):
@@ -114,6 +116,36 @@ async def save_call(call):
 
 async def load_call(call_id):
     return await _run(_load_sync, call_id)
+
+
+# Per-call-id write serialization for delayed writers (the assessment task lands
+# 30-120s after close(), exactly when human PATCH edits become allowed — a plain
+# load/mutate/save would silently drop whichever write finishes first).
+_CALL_LOCKS = {}
+_CALL_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_for(call_id):
+    with _CALL_LOCKS_GUARD:
+        lock = _CALL_LOCKS.get(call_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _CALL_LOCKS[call_id] = lock
+        return lock
+
+
+async def update_call(call_id, mutator):
+    """Load → mutator(call) → save, serialized per call id.
+
+    `mutator` is a sync callable that edits the call dict in place. Returns the
+    saved call, or None if the record doesn't exist."""
+    async with _lock_for(call_id):
+        call = await _run(_load_sync, call_id)
+        if call is None:
+            return None
+        mutator(call)
+        await _run(_save_sync, call)
+        return call
 
 
 def _date_of(meta):
@@ -216,6 +248,11 @@ async def summary(filters=None):
     pending_twilio = 0
     month_cost = 0.0
     month_calls = 0
+    assessed = assessments_failed = reviewed = 0
+    score_sum = 0
+    red_flags = {"None": 0, "Moderate": 0, "Critical": 0}
+    review_status_counts = {}
+    score_histogram = [0] * 10          # 10-point buckets, 90-100 shares the top bucket
 
     for m in metas:
         g = m.get("gemini_cost_usd") or 0.0
@@ -235,6 +272,22 @@ async def summary(filters=None):
         by_lang[lang] = by_lang.get(lang, 0) + 1
         if m.get("source") == "twilio" and (m.get("twilio") or {}).get("price_usd") is None:
             pending_twilio += 1
+
+        astatus = m.get("assessment_status")
+        if astatus == "completed":
+            assessed += 1
+            score = m.get("assessment_score")
+            if isinstance(score, (int, float)):
+                score_sum += score
+                score_histogram[min(9, max(0, int(score) // 10))] += 1
+            rf = m.get("assessment_red_flag") or "None"
+            red_flags[rf] = red_flags.get(rf, 0) + 1
+            rs = m.get("assessment_review_status") or "unknown"
+            review_status_counts[rs] = review_status_counts.get(rs, 0) + 1
+            if m.get("assessment_reviewed"):
+                reviewed += 1
+        elif astatus == "failed":
+            assessments_failed += 1
 
         d = _date_of(m)
         if d:
@@ -269,6 +322,15 @@ async def summary(filters=None):
         "avg_cost_per_call": avg_cost,
         "bookings": bookings,
         "booking_conversion_rate": round(bookings / total_calls, 4) if total_calls else 0.0,
+        # Interview-assessment aggregates ("bookings" above doubles as completed interviews)
+        "interviews_completed": bookings,
+        "assessed_calls": assessed,
+        "avg_score": round(score_sum / assessed, 1) if assessed else None,
+        "red_flags": red_flags,
+        "review_status_counts": review_status_counts,
+        "score_histogram": score_histogram,
+        "assessments_failed": assessments_failed,
+        "pending_review": max(0, assessed - reviewed),
         "this_month": {"calls": month_calls, "cost_usd": round(month_cost, 6)},
         "projected_month_cost": projected,
         "by_day": sorted(by_day.values(), key=lambda x: x["date"]),
