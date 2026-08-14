@@ -47,7 +47,7 @@ from gemini_live import _SILENT_SCHEDULING
 # google-genai >= 2.x: record_interview/mark_question are SILENT (their results never force a turn); on <2.x this is None and the blocking-path forced-turn suppression applies.
 _RSVP_SILENT = _SILENT_SCHEDULING is not None
 
-# The interview runs Hindi-first with Gujarati/English mirroring, and input transcription
+# The interview runs Gujarati-touch-first with Hindi/English mirroring, and input transcription
 # arrives in native script — every matcher below carries Devanagari/Gujarati tokens too.
 # Mutual-goodbye detection: after the agent's goodbye + end_call, a bare "bye/thanks/okay" lets the hangup proceed; a real follow-up still cancels it.
 _QUESTION_RE = re.compile(
@@ -757,7 +757,7 @@ class PlivoMediaBridge:
                             trigger = (f"[The call has just been answered. The employee's first name is {first_name}; "
                                        f"they are a Canny Management Services contract employee. "
                                        f"Begin THE OPENING: your first turn is EXACTLY "
-                                       f'"नमस्ते! क्या मेरी बात {first_name} जी से हो रही है?" — say ONLY that, then STOP '
+                                       f'"નમસ્તે! {first_name}ભાઈ બોલો છો?" — say ONLY that, then STOP '
                                        f"and wait. Do NOT mention the incident, the interview, or the 6th of August "
                                        f"until the right employee is confirmed on the line. Use the name naturally, never overuse it.]")
                         else:
@@ -988,7 +988,7 @@ class PlivoMediaBridge:
                         self._silence_nudged = True
                         self._silence_nudge_at = now
                         self._silence_nudge_count += 1
-                        who = (f"'{self.first_name} जी, क्या आप सुन रहे हैं?'"
+                        who = (f"'{self.first_name}भाई, क्या आप सुन रहे हैं?'"
                                if self.first_name else "'क्या आप सुन रहे हैं?'")
                         logger.info(f"Quiet for {quiet_for:.0f}s; injecting are-you-still-there nudge "
                                     f"({self._silence_nudge_count}/{nudge_max}"

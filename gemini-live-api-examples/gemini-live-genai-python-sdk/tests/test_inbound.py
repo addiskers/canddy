@@ -319,7 +319,7 @@ def test_bridge_uses_per_call_trigger_over_named_opening():
 def test_bridge_empty_trigger_falls_back_to_named_opening():
     got = asyncio.run(_run_start(lambda cid: ""))
     assert "first name is Pratik" in got
-    assert "क्या मेरी बात Pratik जी से हो रही है?" in got      # Hindi identity-check opening
+    assert "Pratikભાઈ બોલો છો?" in got      # Gujarati identity-check opening
     assert "Do NOT mention the incident" in got
 
 

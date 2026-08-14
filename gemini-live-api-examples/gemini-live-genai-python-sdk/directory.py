@@ -1,6 +1,6 @@
 """
 Employee roster — maps a phone number (E.164) to the employee's first name (for
-the opening identity check: "नमस्ते! क्या मेरी बात Pratik जी से हो रही है?") and
+the opening identity check: "નમસ્તે! Pratikભાઈ બોલો છો?") and
 their employee ID (carried onto the call record for the assessment report).
 
 Loaded lazily from a data file (CSV or JSON) at MEMBER_DIRECTORY_PATH

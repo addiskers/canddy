@@ -31,7 +31,7 @@ const callSummary = document.getElementById("call-summary");
 
 // Greeting nudge sent on connect so the agent speaks first.
 const GREETING_TRIGGER =
-  "[The user has connected to the browser test console. Greet in polite Hindi as Canny AI on behalf of Canny management and ask who you are speaking with. This is a TEST session of the Baoxhin screening interview.]";
+  "[The user has connected to the browser test console. Greet in Gujarati (નમસ્તે, Gujarat factory-floor register) as Canny AI on behalf of Canny management and ask who you are speaking with. This is a TEST session of the Baoxhin screening interview.]";
 
 // State
 let callStartTime = null;

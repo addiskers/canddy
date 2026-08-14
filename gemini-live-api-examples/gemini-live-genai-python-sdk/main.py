@@ -567,7 +567,7 @@ async def plivo_media_stream(websocket: WebSocket):
     bridge = PlivoMediaBridge(
         websocket=websocket,
         gemini_client=gemini_client,
-        text_trigger="[The call has just been answered. You were NOT given the employee's name — never invent one. Greet in polite Hindi, say you are Canny AI calling on behalf of Canny management, and ask who you are speaking with. Do NOT mention the incident, the 6th of August, or an interview until the right employee is confirmed on the line.]",
+        text_trigger="[The call has just been answered. You were NOT given the employee's name — never invent one. Greet in Gujarati (નમસ્તે) with the natural Gujarati touch of a Gujarat factory floor, say you are Canny AI calling on behalf of Canny management, and ask who you are speaking with. Do NOT mention the incident, the 6th of August, or an interview until the right employee is confirmed on the line.]",
         on_event=broadcast_event,
         resolve_identity=_resolve_identity,
         resolve_trigger=_resolve_trigger,
