@@ -112,8 +112,8 @@ _CLOSING_MARKERS = (
 # Agent turn that ended with a question — give the caller more thinking time before "are you still there?"
 _AGENT_QUESTION_RE = re.compile(
     r"[?]|\b(are you (still )?there|could you (tell|explain)|please explain|"
-    r"क्या|कौन|कब|कहाँ|कहां|कैसे|कितने|किसने|बताइए|बताएं|सुन रहे|सही है|"
-    r"શું|કોણ|ક્યારે|કેવી રીતે|જણાવો|સાંભળો છો)\b", re.I)
+    r"क्या|कौन|कब|कहाँ|कहां|कैसे|कितने|किसने|बताइए|बताएं|समझाइए|सुन रहे|सही है|"
+    r"શું|કોણ|ક્યારે|કેવી રીતે|જણાવો|સમજાવો|બતાવો|પૂછું|જવાબ આપો|સાંભળો છો)\b", re.I)
 
 
 def _has_closing_repeat(turn_text: str) -> bool:
@@ -957,7 +957,7 @@ class PlivoMediaBridge:
                 # turn_complete may never come (text-triggered greeting / unregistered caller turn) — self-expire the turn after 3s of agent silence with a drained queue, or the nudge ladder stays muzzled.
                 agent_quiet = (self._out_frames.empty() and not self._residual
                                and (not self._turn_open
-                                    or now - self._last_agent_audio >= 3.0))
+                                    or now - self._last_agent_audio >= 8.0))
                 if self._rsvp_recorded and idle >= post_rsvp:
                     logger.info(f"Idle {idle:.0f}s after RSVP; scheduling hangup")
                     self._schedule_end(mute=False)   # if the agent does speak a farewell, let it play
