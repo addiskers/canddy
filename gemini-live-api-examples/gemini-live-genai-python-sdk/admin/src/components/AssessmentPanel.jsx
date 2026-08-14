@@ -16,9 +16,7 @@ const CATS = [
   ['overall_suitability', 'Overall suitability'],
 ]
 
-const REVIEW_STATUSES = [
-  'Further consideration', 'Canny review', 'Baoxhin review', 'Critical human review',
-]
+const REVIEW_STATUSES = ['Pass', 'Moderate', 'Needs review']
 
 const scoreColor = (pct) => (pct >= 75 ? 'var(--ok-2)' : pct >= 50 ? 'var(--amber)' : '#fca5a5')
 const prettyBand = (b) => String(b || '').replace(/_/g, ' ')

@@ -108,14 +108,35 @@ def _label_and_strip(items: list[dict], include_cost: bool = False) -> list[dict
                              or (phone_names.get(str(phone)) if phone else None) or "")
         c["has_recording"] = store.has_recording(c.get("call_sid"))
         c["rsvp_outcome_label"] = _rsvp_label(c.get("rsvp_outcome_status"))
+        if c.get("assessment_review_status"):
+            c["assessment_review_status"] = assessment.normalize_review_status(
+                c["assessment_review_status"])
         out.append(c)
     return out
+
+
+def _clean_assessment(a: dict, strip_cost: bool) -> dict:
+    """Response copy of an assessment block: optionally drop cost/token fields,
+    and normalise legacy 4-value review statuses to the current 3-value set."""
+    a = dict(a)
+    if strip_cost:
+        a.pop("tokens", None)
+        a.pop("cost_usd", None)
+    for sect in ("classifications", "override"):
+        blk = a.get(sect)
+        if isinstance(blk, dict) and blk.get("review_status"):
+            blk = dict(blk)
+            blk["review_status"] = assessment.normalize_review_status(blk["review_status"])
+            a[sect] = blk
+    return a
 
 
 def _strip_full(call: dict, include_cost: bool = False) -> dict:
     """Full call record (for the transcript drawer). eo_admin keeps cost."""
     if include_cost:
         c = dict(call)
+        if isinstance(c.get("assessment"), dict):
+            c["assessment"] = _clean_assessment(c["assessment"], strip_cost=False)
         c.setdefault("messages", c.get("transcript") or [])
         cid = c.get("campaign_id")
         if cid:
@@ -128,10 +149,7 @@ def _strip_full(call: dict, include_cost: bool = False) -> dict:
     if isinstance(c.get("summary"), dict):
         c["summary"] = {k: v for k, v in c["summary"].items() if k not in _SUMMARY_COST_KEYS}
     if isinstance(c.get("assessment"), dict):
-        a = dict(c["assessment"])
-        a.pop("tokens", None)
-        a.pop("cost_usd", None)
-        c["assessment"] = a
+        c["assessment"] = _clean_assessment(c["assessment"], strip_cost=True)
     # normalise transcript key for the SPA (it reads `messages` or `transcript`)
     c.setdefault("messages", c.get("transcript") or [])
     cid = c.get("campaign_id")
@@ -955,11 +973,13 @@ _RED_FLAG_SEVERITY = {"Critical": 0, "Moderate": 1, "None": 2}
 
 
 def _effective(a: dict) -> tuple:
-    """(red_flag, review_status) with a management override applied."""
+    """(red_flag, review_status) with a management override applied; legacy
+    4-value review statuses normalised to the current 3-value set."""
     cls = a.get("classifications") or {}
     ov = a.get("override") or {}
     return (ov.get("red_flag_level") or cls.get("red_flag_level") or "None",
-            ov.get("review_status") or cls.get("review_status") or "")
+            assessment.normalize_review_status(
+                ov.get("review_status") or cls.get("review_status") or ""))
 
 
 @router.get("/campaigns/{campaign_id}/ranking")

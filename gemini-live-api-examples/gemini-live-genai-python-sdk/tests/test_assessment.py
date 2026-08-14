@@ -67,7 +67,7 @@ def _raw(scores=None, key_evidence=None, **over):
             "future_compliance": "Strong",
             "communication": "Clear",
             "red_flag_level": "None",
-            "review_status": "Further consideration",
+            "review_status": "Pass",
         },
         "key_evidence": key_evidence if key_evidence is not None else [
             {"quote": "I stayed at my station and kept working the whole shift",
@@ -187,7 +187,7 @@ def test_verify_evidence_verbatim_quote_verifies():
     assert out["key_evidence"][0]["verified"] is True
     assert out["evidence_verified"] is True
     assert out["evidence_check"] == {"checked": 1, "matched": 1, "unmatched": []}
-    assert out["classifications"]["review_status"] == "Further consideration"  # not escalated
+    assert out["classifications"]["review_status"] == "Pass"  # not escalated
 
 
 def test_verify_evidence_fabricated_quote_escalates_to_critical_review():
@@ -198,7 +198,7 @@ def test_verify_evidence_fabricated_quote_escalates_to_critical_review():
     assert out["key_evidence"][0]["verified"] is False
     assert out["evidence_verified"] is False
     assert out["evidence_check"]["matched"] == 0
-    assert out["classifications"]["review_status"] == "Critical human review"  # escalated
+    assert out["classifications"]["review_status"] == "Needs review"  # escalated
 
 
 def test_organiser_band_with_zero_verified_quotes_is_rejected():
@@ -282,7 +282,7 @@ def test_run_assessment_completes_and_promotes_flat_fields(monkeypatch):
     assert meta["assessment_status"] == "completed"
     assert meta["assessment_score"] == a["total_score"]
     assert meta["assessment_red_flag"] == "None"
-    assert meta["assessment_review_status"] == "Further consideration"
+    assert meta["assessment_review_status"] == "Pass"
     assert meta["assessment_involvement"] == "Passive participant"
     assert meta["assessment_reviewed"] is False
     # the scoring cost is folded into the call's running total
@@ -360,3 +360,16 @@ def test_store_update_call_missing_record_returns_none():
     async def run():
         return await store.update_call("upd-missing-xyz", lambda c: c.update(x=1))
     assert asyncio.run(run()) is None
+
+
+# ── legacy review-status normalisation (records scored before the 3-value set) ──
+
+def test_normalize_review_status_maps_all_legacy_values():
+    n = assessment.normalize_review_status
+    assert n("Further consideration") == "Pass"
+    assert n("Canny review") == "Moderate"
+    assert n("Baoxhin review") == "Moderate"
+    assert n("Critical human review") == "Needs review"
+    for v in assessment.REVIEW_STATUSES:          # current values pass through
+        assert n(v) == v
+    assert n("") == ""

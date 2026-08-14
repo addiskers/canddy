@@ -196,8 +196,21 @@ ACCOUNTABILITY_LEVELS = ["Strong", "Partial", "Limited", "None"]
 COMPLIANCE_LEVELS = ["Strong", "Moderate", "Unclear", "Poor"]
 COMMUNICATION_LEVELS = ["Clear", "Adequate", "Needs review"]
 RED_FLAG_LEVELS = ["None", "Moderate", "Critical"]
-REVIEW_STATUSES = ["Further consideration", "Canny review", "Baoxhin review",
-                   "Critical human review"]
+REVIEW_STATUSES = ["Pass", "Moderate", "Needs review"]
+
+# Records scored before the 3-status simplification carry the old four values;
+# reads normalise them so no data migration is needed.
+LEGACY_REVIEW_MAP = {
+    "Further consideration": "Pass",
+    "Canny review": "Moderate",
+    "Baoxhin review": "Moderate",
+    "Critical human review": "Needs review",
+}
+
+
+def normalize_review_status(value):
+    """Map a legacy review status to the current 3-value set; passthrough otherwise."""
+    return LEGACY_REVIEW_MAP.get(value, value)
 COVERAGE_STATUSES = ["answered", "partial", "skipped", "refused"]
 
 # Gemini structured-output schema (OpenAPI subset). human_review_required is
@@ -440,7 +453,7 @@ F. overall_suitability (5): general suitability for a structured workplace.
 - Critical: credible evidence (from their OWN statements) of organising/instigating; directing others to stop; actively pressuring others; preventing or discouraging return to work; threats or intimidation; serious abusive conduct; unauthorised promises about jobs/salary; explicit indication the conduct would be repeated.
 - Moderate: participation with limited accountability; significant blame-shifting; evasive or contradictory answers; uncertain future compliance; admitted influence over others where the extent is unclear.
 - None: no evidence of organising; clear distinction between their own and others' actions; accountability; willingness to comply.
-Set review_status accordingly: "Critical human review" for Critical; "Canny review" or "Baoxhin review" for Moderate concerns; "Further consideration" otherwise.
+Set review_status accordingly: "Needs review" for Critical; "Moderate" for Moderate concerns; "Pass" otherwise.
 
 ## EVIDENCE RULES (hard constraints)
 - Every serious finding MUST cite what THIS employee actually said: a VERBATIM quote in the original language, with the turn number from the transcript below. Do not paraphrase inside "quote" — copy the exact words.
@@ -617,7 +630,7 @@ def verify_evidence(result, call):
                                 "unmatched": unmatched}
     result["evidence_verified"] = not unmatched
     if unmatched:
-        result["classifications"]["review_status"] = "Critical human review"
+        result["classifications"]["review_status"] = "Needs review"
 
     # Allegation firewall: an organiser-band involvement score with ZERO verified
     # evidence is an unsupported "instigator" label — reject rather than emit.
@@ -671,8 +684,9 @@ def _promote_flat_fields(call):
         call["assessment_score"] = a.get("total_score")
         call["assessment_red_flag"] = (override.get("red_flag_level")
                                        or (a.get("classifications") or {}).get("red_flag_level"))
-        call["assessment_review_status"] = (override.get("review_status")
-                                            or (a.get("classifications") or {}).get("review_status"))
+        call["assessment_review_status"] = normalize_review_status(
+            override.get("review_status")
+            or (a.get("classifications") or {}).get("review_status"))
         call["assessment_involvement"] = (a.get("classifications") or {}).get("incident_involvement")
         call["assessment_summary"] = a.get("summary") or ""
     else:

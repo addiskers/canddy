@@ -79,8 +79,8 @@ so Plivo can reach `/plivo/answer`.
 | Overall suitability | 5 |
 
 - **Red-flag levels**: `None`, `Moderate`, `Critical`.
-- **Review statuses**: `Further consideration`, `Canny review`, `Baoxhin review`,
-  `Critical human review`.
+- **Review statuses**: `Pass`, `Moderate`, `Needs review` (Critical red flags and
+  unverified evidence always land on `Needs review`).
 - Each assessment carries an involvement classification (passive → organiser/instigator bands),
   a summary, and **evidence quotes verified against the transcript**.
 
