@@ -291,7 +291,7 @@ class CallRecorder:
             # Silent per-question progress — accumulates even on dropped calls so an
             # incomplete interview still yields coverage, and callbacks can resume from N.
             n = result.get("question_number")
-            if isinstance(n, int) and 1 <= n <= 20:
+            if isinstance(n, int) and 1 <= n <= 10:
                 progress = self.call.setdefault("interview_progress", {})
                 progress[str(n)] = {
                     "status": result.get("status") or "answered",

@@ -577,7 +577,7 @@ def test_record_interview_tool_call_arms_post_record_hangup():
     async def run():
         b = PlivoMediaBridge(FakeWS(), gemini_client=_FakeGemini([
             {"type": "tool_call", "name": "mark_question",
-             "args": {"question_number": 20, "status": "answered"}, "result": {"success": True}},
+             "args": {"question_number": 10, "status": "answered"}, "result": {"success": True}},
             {"type": "tool_call", "name": "record_interview",
              "args": {"outcome_status": "yes"}, "result": {"outcome_status": "yes"}},
         ]), text_trigger="[go]")

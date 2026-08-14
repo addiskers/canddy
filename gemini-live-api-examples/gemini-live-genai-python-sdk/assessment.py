@@ -1,6 +1,6 @@
-"""Tring Tring AI — post-call interview assessment.
+"""Canny AI — post-call interview assessment.
 
-QUESTIONS is the single source of truth for the 20-question Canny/Baoxhin
+QUESTIONS is the single source of truth for the 10-question Canny/Baoxhin
 screening: gemini_live.py renders it into the live interviewer's system prompt,
 and the scorer below renders it into the assessment prompt, so the two can
 never drift.
@@ -14,131 +14,74 @@ outcomes.
 
 RUBRIC_VERSION = 1
 
-# The 20 core interview questions (Canny Interview Guide, section 4).
+# The 10 core interview questions (client-reduced set, Aug 2026: merged incident/
+# return-to-work items, added apology-letter and continue-working questions).
 # en = canonical English text (used by the scorer), hi = phrasing hint for the
 # live agent's Hindi-first delivery, followups = asked only when needed.
 QUESTIONS = [
     {
         "n": 1, "key": "incident_account",
-        "en": "Please explain, in your own words, what happened on 6 August from the time you first became aware of the phone-storage requirement.",
-        "hi": "6 अगस्त को फ़ोन जमा करने के नए नियम का पता चलने से लेकर जो कुछ हुआ, वह ज़रा अपने शब्दों में बताइए।",
-        "followups": "What happened after that? | What did you personally do? | Who were you with at that time?",
+        "en": "Please explain, in your own words, what happened on 6 August from the time you first became aware of the phone-storage requirement until the work stoppage.",
+        "hi": "6 अगस्त को फ़ोन जमा करने के नियम का पता चलने से लेकर काम रुकने तक जो कुछ हुआ, वह अपने शब्दों में बताइए।",
+        "followups": "What happened after that? | What did you personally do?",
     },
     {
         "n": 2, "key": "learned_of_policy",
-        "en": "How did you first come to know about the phone-storage requirement?",
-        "hi": "फ़ोन जमा करने के नियम के बारे में आपको सबसे पहले कैसे पता चला?",
-        "followups": "Who told you about it? | What were you told? | Did you understand why the requirement was being introduced?",
+        "en": "How did you first come to know about the phone-storage requirement, and what were you told about it?",
+        "hi": "फ़ोन जमा करने के नियम के बारे में आपको सबसे पहले कैसे पता चला, और आपको क्या बताया गया था?",
+        "followups": "Who told you about it?",
     },
     {
         "n": 3, "key": "personal_concern",
         "en": "What was your personal concern with the phone-storage requirement?",
         "hi": "इस नियम को लेकर आपकी अपनी क्या चिंता थी?",
-        "followups": "Was your concern about the policy itself or how it was being implemented? | Did you raise this concern with anyone?",
+        "followups": "Was your concern about the policy itself or how it was being implemented?",
     },
     {
         "n": 4, "key": "raised_before_stopping",
-        "en": "Before you stopped working, did you raise your concern with your Canny supervisor, Canny management or Baoxhin management?",
-        "hi": "काम रोकने से पहले, क्या आपने अपनी चिंता Canny के सुपरवाइज़र, Canny management या Baoxhin management को बताई थी?",
-        "followups": "If no: Why did you not raise it with them?",
+        "en": "Before you stopped working, did you raise your concern with your Canny supervisor, Canny management, or Baoxhin management?",
+        "hi": "काम रोकने से पहले, क्या आपने अपनी चिंता Canny सुपरवाइज़र, Canny management या Baoxhin management को बताई थी?",
+        "followups": "If no: Why did you not raise it with them? Kiske paas complaint raise ki thi, strike karne se pehle?",
     },
     {
         "n": 5, "key": "own_decision",
-        "en": "Was stopping work your own decision, or did someone ask or encourage you to participate?",
-        "hi": "काम रोकना आपका अपना फ़ैसला था, या किसी ने आपसे कहा या आपको समझाया था?",
-        "followups": "If someone encouraged you: Who was that person, and what exactly did they say?",
+        "en": "Was stopping work your own decision, or did someone ask, encourage, or pressure you to participate?",
+        "hi": "काम रोकना आपका अपना फ़ैसला था, या किसी ने आपसे कहा, आपको समझाया या आप पर दबाव डाला?",
+        "followups": "If someone: Kisne bola tha? | Exactly kya bola tha? | Aapne uske baad khud kya kiya?",
     },
     {
         "n": 6, "key": "who_initiated",
-        "en": "Who first suggested that employees should stop working?",
-        "hi": "सबसे पहले किसने कहा कि सबको काम रोक देना चाहिए?",
-        "followups": "What exactly did that person say? | Where did this discussion take place? | Approximately how many employees were present?",
+        "en": "Who first suggested that employees should stop working, and what was said?",
+        "hi": "सबसे पहले किसने कहा कि सबको काम रोक देना चाहिए, और क्या कहा गया था?",
+        "followups": "Where did this discussion take place? | Did you personally ask any other employee to stop working?",
     },
     {
-        "n": 7, "key": "coordination",
-        "en": "Who was coordinating or speaking to the group about what everyone should do?",
-        "hi": "कौन सबको बता रहा था या समूह से बात कर रहा था कि क्या करना है?",
-        "followups": "What did that person actually do or say?",
+        "n": 7, "key": "return_to_work",
+        "en": "Were you asked to return to work? If yes, what did you do? Did anyone discourage, pressure, or prevent you from returning?",
+        "hi": "क्या आपसे वापस काम पर लौटने को कहा गया था? अगर हाँ, तो आपने क्या किया? क्या किसी ने आपको लौटने से रोका या दबाव डाला?",
+        "followups": "Did YOU discourage or prevent anyone else from returning?",
     },
     {
-        "n": 8, "key": "influenced_others",
-        "en": "Did you personally ask, encourage or convince any other employee to stop working?",
-        "hi": "क्या आपने ख़ुद किसी और कर्मचारी से काम रोकने के लिए कहा या उसे समझाया?",
-        "followups": "If yes: Who did you speak to, and what did you say? | If no: Did anyone ask you to encourage other employees to participate?",
-    },
-    {
-        "n": 9, "key": "instructions_given",
-        "en": "Did you or anyone else give instructions to employees about whether they should continue refusing work or return to work?",
-        "hi": "क्या आपने या किसी और ने कर्मचारियों को यह निर्देश दिया कि काम बंद रखना है या वापस काम पर जाना है?",
-        "followups": "Who gave the instructions? | What instructions were given? | How were they communicated?",
-    },
-    {
-        "n": 10, "key": "group_spokesperson",
-        "en": "Who was communicating with employees or management on behalf of the group during the incident?",
-        "hi": "उस दौरान समूह की ओर से कर्मचारियों या management से कौन बात कर रहा था?",
-        "followups": "What was that person communicating?",
-    },
-    {
-        "n": 11, "key": "left_workstation",
-        "en": "Did you leave your workstation during the incident? Please explain what you did and why.",
-        "hi": "क्या आपने उस दौरान अपनी जगह से काम छोड़ा? आपने क्या किया और क्यों, बताइए।",
-        "followups": "",
-    },
-    {
-        "n": 12, "key": "asked_to_return",
-        "en": "Were you asked to return to work? If yes, what did you do?",
-        "hi": "क्या आपसे वापस काम पर लौटने को कहा गया था? अगर हाँ, तो आपने क्या किया?",
-        "followups": "Did anyone discourage or prevent you from returning?",
-    },
-    {
-        "n": 13, "key": "own_conduct",
-        "en": "During the incident, did you use abusive, threatening or inappropriate language towards any Canny or Baoxhin representative?",
-        "hi": "क्या उस दौरान आपने Canny या Baoxhin के किसी व्यक्ति के साथ गाली-गलौज, धमकी या ग़लत भाषा का इस्तेमाल किया?",
+        "n": 8, "key": "own_conduct",
+        "en": "During the incident, did you personally use any abusive, threatening, or inappropriate language or behaviour towards any Canny or Baoxhin representative?",
+        "hi": "उस दौरान, क्या आपने ख़ुद Canny या Baoxhin के किसी व्यक्ति के साथ गाली-गलौज, धमकी या ग़लत भाषा या व्यवहार किया?",
         "followups": "If yes: Please explain what happened.",
     },
     {
-        "n": 14, "key": "discouraged_return",
-        "en": "Did you at any point discourage, pressure or prevent another employee from returning to work?",
-        "hi": "क्या आपने कभी किसी और कर्मचारी को वापस काम पर जाने से रोका, मना किया या उस पर दबाव डाला?",
-        "followups": "If yes: Please explain what happened and why.",
+        "n": 9, "key": "apology_letter",
+        "en": "Were you asked to sign an apology letter regarding the incident? If yes, did you sign it?",
+        "hi": "क्या आपसे incident के बारे में apology letter sign करने को कहा गया था? अगर हाँ, तो क्या आपने sign किया?",
+        "followups": "Did you understand what you were signing? | Did you sign it voluntarily? | Did you have any concerns about signing it?",
     },
     {
-        "n": 15, "key": "employment_promises",
-        "en": "Did you or anyone else make promises or statements to employees regarding their jobs, salary, termination or continuation with Canny or Baoxhin?",
-        "hi": "क्या आपने या किसी और ने कर्मचारियों से नौकरी, सैलरी, निकाले जाने या नौकरी बने रहने को लेकर कोई वादा या बात कही?",
-        "followups": "What was said, and who said it?",
-    },
-    {
-        "n": 16, "key": "reflection",
-        "en": "Looking back at the incident, do you believe stopping work was the appropriate way to raise the concern? Why or why not?",
-        "hi": "अब पीछे देखें तो क्या आपको लगता है कि चिंता जताने के लिए काम रोकना सही तरीका था? क्यों या क्यों नहीं?",
-        "followups": "",
-    },
-    {
-        "n": 17, "key": "accountability",
-        "en": "What responsibility do you believe you personally had for your actions during the incident?",
-        "hi": "उस दिन आपने जो किया, उसकी आपकी अपनी क्या ज़िम्मेदारी बनती है — आपको क्या लगता है?",
-        "followups": "",
-    },
-    {
-        "n": 18, "key": "do_differently",
-        "en": "If you face a similar disagreement with a Baoxhin policy in the future, what would you do differently?",
-        "hi": "अगर आगे कभी Baoxhin के किसी नियम से आपको दिक्कत हुई, तो आप क्या अलग तरीक़े से करेंगे?",
-        "followups": "",
-    },
-    {
-        "n": 19, "key": "future_compliance",
-        "en": "Are you willing to follow applicable Baoxhin policies and raise concerns through the appropriate Canny or Baoxhin management channel going forward?",
-        "hi": "क्या आप आगे से Baoxhin के नियम मानने और अपनी बात सही तरीक़े से Canny या Baoxhin management तक पहुँचाने के लिए तैयार हैं?",
-        "followups": "If you have concerns: Could you explain what concerns you have?",
-    },
-    {
-        "n": 20, "key": "final_opportunity",
-        "en": "Is there anything else you would like Canny management to know about your involvement in the incident or before a decision is made regarding your continued deployment at Baoxhin?",
-        "hi": "फ़ैसला होने से पहले, क्या आप Canny management को अपनी ओर से और कुछ बताना चाहेंगे?",
-        "followups": "",
+        "n": 10, "key": "continue_working",
+        "en": "Do you want to continue working at Baoxhin through Canny, and are you ready to follow the applicable Baoxhin policies and management instructions?",
+        "hi": "अब एक simple question का सीधा जवाब दीजिए — क्या आप Canny के साथ अपनी नौकरी continue करना चाहते हैं, और Baoxhin site पर applicable policies और management instructions follow करने के लिए ready हैं?",
+        "followups": "If YES: confirm — future mein concern ho toh kaam rokne ke bajay Canny management ke proper channel par raise karna hoga; is baat ko aap clearly samajh rahe hain? | If NO: Kya aap apni position clearly confirm karna chahenge ki aap Canny ke saath employment continue nahi karna chahte? | If UNSURE: Aapko kya concern hai jo aapko decision lene se rok raha hai?",
     },
 ]
+
+QUESTIONS_TOTAL = len(QUESTIONS)
 
 
 def questions_prompt_block():
@@ -462,7 +405,8 @@ Set review_status accordingly: "Needs review" for Critical; "Moderate" for Moder
 - If the transcript does not support a finding, do not make it.
 - Next to any non-English quote, put an English translation in "translation".
 
-## THE 20 CORE QUESTIONS (emit question_coverage: one entry per question that was raised, with status answered/partial/skipped/refused and the turn where it was answered)
+## THE {QUESTIONS_TOTAL} CORE QUESTIONS (emit question_coverage: one entry per question that was raised, with status answered/partial/skipped/refused and the turn where it was answered)
+(Q9, the apology letter, is context for accountability; Q10, continuation willingness, feeds future_compliance. Grievances the employee raised but the interviewer only noted — food, salary, accommodation, supervisor behaviour — are context, never conduct findings by themselves.)
 {_questions_scoring_block()}
 
 ## INTERVIEW TRANSCRIPT
@@ -570,7 +514,7 @@ def validate_result(raw):
             qn = int(item["q"])
         except (TypeError, ValueError):
             continue
-        if 1 <= qn <= 20 and qn not in seen_q and item["status"] in COVERAGE_STATUSES:
+        if 1 <= qn <= QUESTIONS_TOTAL and qn not in seen_q and item["status"] in COVERAGE_STATUSES:
             seen_q.add(qn)
             coverage.append({"q": qn, "status": item["status"],
                              "turn": item.get("turn")})
@@ -796,6 +740,7 @@ async def run_assessment(call_id, trigger="auto", requested_by="system", force=F
                 "scored_at": _now_iso(), "attempts": attempts_done, "error": None,
                 "trigger": trigger, "requested_by": requested_by,
                 "human_review_required": True,        # ALWAYS — the AI never decides
+                "questions_total": QUESTIONS_TOTAL,
                 "employee": employee,
                 "tokens": tokens, "cost_usd": cost,
                 "history": a.get("history") or [],

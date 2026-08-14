@@ -75,7 +75,7 @@ def _raw(scores=None, key_evidence=None, **over):
         "named_persons": [],
         "contradictions": [],
         "question_coverage": [{"q": 1, "status": "answered", "turn": 2},
-                              {"q": 19, "status": "answered", "turn": 6}],
+                              {"q": 9, "status": "answered", "turn": 6}],
         "summary": "Employee describes staying at their station and commits to proper channels.",
     }
     raw.update(over)
@@ -373,3 +373,19 @@ def test_normalize_review_status_maps_all_legacy_values():
     for v in assessment.REVIEW_STATUSES:          # current values pass through
         assert n(v) == v
     assert n("") == ""
+
+
+# ── client question set (Aug 2026): 10 questions incl. apology letter + continuation ──
+
+def test_question_set_is_the_client_ten():
+    assert assessment.QUESTIONS_TOTAL == 10
+    keys = [q["key"] for q in assessment.QUESTIONS]
+    assert keys[8] == "apology_letter"
+    assert keys[9] == "continue_working"
+    assert [q["n"] for q in assessment.QUESTIONS] == list(range(1, 11))
+    # coverage validation follows the question count: q>10 is dropped
+    raw = _raw()
+    raw["question_coverage"] = [{"q": 10, "status": "answered", "turn": 2},
+                                {"q": 11, "status": "answered", "turn": 3}]
+    out = assessment.validate_result(raw)
+    assert out["question_coverage"] == [{"q": 10, "status": "answered", "turn": 2}]

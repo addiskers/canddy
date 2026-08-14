@@ -86,9 +86,9 @@ def test_recorder_note_becomes_call_remark():
     r.call = {"id": "x", "caller": "+919", "generation": 0, "booking_created": False,
               "transcript": [], "tool_calls": []}
     r._record_tool({"type": "tool_call", "name": "record_interview", "args": {},
-                    "result": {"outcome_status": "yes", "note": "answered all 20 questions"}})
-    assert r.call["remark"] == "answered all 20 questions"
-    assert r.call["rsvp_note"] == "answered all 20 questions"
+                    "result": {"outcome_status": "yes", "note": "answered all 10 questions"}})
+    assert r.call["remark"] == "answered all 10 questions"
+    assert r.call["rsvp_note"] == "answered all 10 questions"
 
 
 def _reap_with(monkeypatch, rec, cc_extra=None):

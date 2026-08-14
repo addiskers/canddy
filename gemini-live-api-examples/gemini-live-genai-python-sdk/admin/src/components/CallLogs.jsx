@@ -357,7 +357,7 @@ export function CallDrawer({ call, onClose, onReload }) {
             : Array.isArray(msgs) && msgs.length ? msgs.map((m, i) => (
               <div key={i} style={{ fontSize: '0.82rem' }}>
                 <b style={{ color: (m.role === 'user' || m.speaker === 'user') ? 'var(--blue)' : 'var(--accent)' }}>
-                  {(m.role || m.speaker) === 'user' ? 'Caller' : 'Tring Tring'}:
+                  {(m.role || m.speaker) === 'user' ? 'Caller' : 'Canny AI'}:
                 </b>{' '}
                 {m.text || m.content || m.transcript}
               </div>

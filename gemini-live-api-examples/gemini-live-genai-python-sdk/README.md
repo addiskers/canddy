@@ -2,7 +2,7 @@
 
 **Tring Tring AI** is an AI phone interviewer built for **Canny Management Services** to screen its
 **61 contract employees** about the **6 August 2026 collective work stoppage** at client **Baoxhin**
-(the phone-storage policy protest). The agent conducts a **20-question structured interview** over a
+(the phone-storage policy protest). The agent conducts a **10-question structured interview** over a
 real phone call — **Hindi-first**, mirroring the employee into **Gujarati or English** when they
 switch — and records a per-question progress trail during the call.
 
@@ -60,7 +60,7 @@ so Plivo can reach `/plivo/answer`.
    calling on behalf of Canny management.
 2. **Consent + language** — the employee can refuse (recorded as `no`), ask for a callback, or
    continue in Hindi / Gujarati / English.
-3. **20 structured questions** about the 6 Aug 2026 stoppage — each answer is silently marked via
+3. **10 structured questions** about the 6 Aug 2026 stoppage — each answer is silently marked via
    `mark_question`; interviews interrupted mid-way are called back and resume from question N.
 4. **Outcome recorded** via `record_interview` — completed / refused / callback / voicemail /
    do-not-contact / wrong number.
@@ -117,7 +117,7 @@ Notable settings:
 - `TT_ASSESSMENT_*` — the scoring pipeline: `TT_ASSESSMENT_ENABLED` (explicit opt-in),
   `TT_ASSESSMENT_MODEL`, `TT_ASSESSMENT_MIN_SECONDS`, `TT_ASSESSMENT_MAX_CONCURRENT`,
   `TT_ASSESSMENT_MAX_ATTEMPTS`, `TT_ASSESSMENT_TIMEOUT_S`, `TT_ASSESS_BROWSER`.
-- `CALL_MAX_SECONDS=1200` — a full 20-question Hindi interview runs ~12–15 minutes; keep
+- `CALL_MAX_SECONDS=1200` — a full 10-question Hindi interview runs ~6–10 minutes; the cap leaves headroom. Keep
   `EO_RECORD_MAX_SECONDS` equal to it or recordings get truncated.
 - `EO_DEMO_ENABLED` — gates the `/` test console (keep `false` in production).
 

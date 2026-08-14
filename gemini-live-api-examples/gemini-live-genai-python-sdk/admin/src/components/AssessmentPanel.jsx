@@ -216,14 +216,14 @@ export default function AssessmentPanel({ call, onReload }) {
       <div style={{ marginBottom: 12 }}>
         <span className="muted" style={{ fontSize: '0.7rem' }}>Question coverage</span>
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center', marginTop: 6 }}>
-          {Array.from({ length: 20 }, (_, i) => i + 1).map((n) => (
+          {Array.from({ length: a.questions_total || 10 }, (_, i) => i + 1).map((n) => (
             <span key={n} title={`Q${n}`} style={{
               width: 10, height: 10, borderRadius: '50%', display: 'inline-block',
               background: covered.has(n) ? 'var(--accent)' : 'transparent',
               border: `1.5px solid ${covered.has(n) ? 'var(--accent)' : 'var(--border-strong)'}`,
             }} />
           ))}
-          <span className="muted" style={{ fontSize: '0.72rem', marginLeft: 6 }}>{covered.size}/20 questions covered</span>
+          <span className="muted" style={{ fontSize: '0.72rem', marginLeft: 6 }}>{covered.size}/{a.questions_total || 10} questions covered</span>
         </div>
       </div>
 

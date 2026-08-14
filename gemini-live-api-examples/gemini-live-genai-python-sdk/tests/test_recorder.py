@@ -67,12 +67,12 @@ def test_interview_fields_and_note_are_persisted():
     r._record_tool(_interview_event(outcome_status="yes",
                                     employee_confirmed_identity=True,
                                     preferred_language="Hindi",
-                                    questions_completed=20,
+                                    questions_completed=10,
                                     note="cooperative throughout"))
     assert r.call["interview_confirmed_identity"] is True
     assert r.call["interview_refused"] is False
     assert r.call["interview_language"] == "hindi"
-    assert r.call["interview_questions_completed"] == 20
+    assert r.call["interview_questions_completed"] == 10
     assert r.call["rsvp_note"] == "cooperative throughout"
     assert r.call["remark"] == "cooperative throughout"
     # the removed RSVP-era fields are never written any more
@@ -122,8 +122,8 @@ def test_record_interview_count_never_lowers_mark_question_progress():
     r._record_tool(_interview_event(outcome_status="callback", questions_completed=2))
     assert r.call["interview_questions_completed"] == 5
     # ...but a HIGHER tool count may raise it
-    r._record_tool(_interview_event(outcome_status="yes", questions_completed=20))
-    assert r.call["interview_questions_completed"] == 20
+    r._record_tool(_interview_event(outcome_status="yes", questions_completed=10))
+    assert r.call["interview_questions_completed"] == 10
 
 
 def _run_backprop(monkeypatch, outcome):

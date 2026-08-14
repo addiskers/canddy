@@ -76,7 +76,7 @@ def handle_record_interview(**kwargs):
         # A "callback" with a voicemail note and no requested time is a machine answer, not an employee request.
         status = "voicemail"
     try:
-        questions_completed = max(0, min(20, int(kwargs.get("questions_completed") or 0)))
+        questions_completed = max(0, min(10, int(kwargs.get("questions_completed") or 0)))
     except (TypeError, ValueError):
         questions_completed = 0
     result = {
@@ -112,7 +112,7 @@ def handle_mark_question(**kwargs):
     if status not in ("answered", "partial", "declined", "dont_know", "skipped"):
         status = "answered"
     return {
-        "success": 1 <= n <= 20,
+        "success": 1 <= n <= 10,
         "silent": True,
         "question_number": n,
         "status": status,
@@ -567,7 +567,7 @@ async def plivo_media_stream(websocket: WebSocket):
     bridge = PlivoMediaBridge(
         websocket=websocket,
         gemini_client=gemini_client,
-        text_trigger="[The call has just been answered. You were NOT given the employee's name — never invent one. Greet in polite Hindi, say you are Tring Tring AI calling on behalf of Canny management, and ask who you are speaking with. Do NOT mention the incident, the 6th of August, or an interview until the right employee is confirmed on the line.]",
+        text_trigger="[The call has just been answered. You were NOT given the employee's name — never invent one. Greet in polite Hindi, say you are Canny AI calling on behalf of Canny management, and ask who you are speaking with. Do NOT mention the incident, the 6th of August, or an interview until the right employee is confirmed on the line.]",
         on_event=broadcast_event,
         resolve_identity=_resolve_identity,
         resolve_trigger=_resolve_trigger,

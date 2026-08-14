@@ -50,11 +50,11 @@ def test_genuine_employee_callback_untouched():
 
 # Interview result fields
 
-def test_questions_completed_clamped_to_0_20():
+def test_questions_completed_clamped_to_0_10():
     assert handle_record_interview(outcome_status="yes",
-                                   questions_completed=20)["questions_completed"] == 20
+                                   questions_completed=10)["questions_completed"] == 10
     assert handle_record_interview(outcome_status="yes",
-                                   questions_completed=25)["questions_completed"] == 20
+                                   questions_completed=25)["questions_completed"] == 10
     assert handle_record_interview(outcome_status="callback",
                                    questions_completed=-3)["questions_completed"] == 0
     assert handle_record_interview(outcome_status="callback",

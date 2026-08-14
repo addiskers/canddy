@@ -31,7 +31,7 @@ const callSummary = document.getElementById("call-summary");
 
 // Greeting nudge sent on connect so the agent speaks first.
 const GREETING_TRIGGER =
-  "[The user has connected to the browser test console. Greet in polite Hindi as Tring Tring AI on behalf of Canny management and ask who you are speaking with. This is a TEST session of the Baoxhin screening interview.]";
+  "[The user has connected to the browser test console. Greet in polite Hindi as Canny AI on behalf of Canny management and ask who you are speaking with. This is a TEST session of the Baoxhin screening interview.]";
 
 // State
 let callStartTime = null;
@@ -58,7 +58,7 @@ const geminiClient = new GeminiClient({
     startOrb();
     setCaption("Connected", "Say hello…");
 
-    // Let Tring Tring speak first, then open the mic.
+    // Let Canny AI speak first, then open the mic.
     geminiClient.sendText(GREETING_TRIGGER);
     startMic();
   },
@@ -73,7 +73,7 @@ const geminiClient = new GeminiClient({
       // Binary = agent audio
       if (!radhaSpeaking) {
         radhaSpeaking = true;
-        setCaption("Speaking…", "Tring Tring AI · Canny Management Services");
+        setCaption("Speaking…", "Canny AI · Canny Management Services");
       }
       mediaHandler.playAudio(event.data);
     }
@@ -405,7 +405,7 @@ function showSessionEnd() {
       </button>
       <div class="tr-full">`;
     for (const e of callTranscript) {
-      const roleLabel = e.role === "user" ? "Employee" : "Tring Tring";
+      const roleLabel = e.role === "user" ? "Employee" : "Canny AI";
       html += `<div class="tr-line tr-${e.role}">
         <span class="tr-time">${escapeHtml(e.time)}</span>
         <span class="tr-role">${roleLabel}:</span>

@@ -1,5 +1,5 @@
 """
-Inbound call-back context — when an employee dials the Tring Tring number back
+Inbound call-back context — when an employee dials the Canny AI screening number back
 (usually after a missed call or our voicemail message), look the caller up in the
 campaign contact list and build the exact opening instruction ("trigger") the
 agent should follow.
@@ -94,8 +94,8 @@ def _resume_hint(cc):
         done = sorted(int(k) for k in progress.keys() if str(k).isdigit())
         if not done:
             return ""
-        nxt = next((n for n in range(1, 21) if n not in done), 21)
-        if nxt > 20:
+        nxt = next((n for n in range(1, 11) if n not in done), 11)
+        if nxt > 10:
             return ""
         return (f" Questions already covered last time: {', '.join(str(n) for n in done)}. "
                 f"After consent, RESUME the interview from question {nxt} — do not re-ask "
