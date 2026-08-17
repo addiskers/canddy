@@ -564,6 +564,34 @@ def test_silence_nudge_respects_cooldown_after_noise_reset(monkeypatch):
     assert asyncio.run(run()) == []                   # cooldown blocks the re-ask
 
 
+def test_agent_is_speaking_half_duplex_gate(monkeypatch):
+    """Half-duplex echo guard keys on the OUTBOUND path (agent audio still going to the
+    caller), never on caller energy — so echo can't defeat it."""
+    monkeypatch.setenv("EO_HALF_DUPLEX", "true")
+    b = _bridge()
+    now = time.monotonic()
+    # agent audio just produced → gated (would-be echo dropped)
+    b._last_agent_audio = now
+    assert b._agent_is_speaking(now) is True
+    # queued outbound frames → still speaking even if the timestamp is stale
+    b._last_agent_audio = now - 10
+    b._out_frames.put_nowait(b"x")
+    assert b._agent_is_speaking(now) is True
+    b._out_frames.get_nowait()
+    # queue empty + agent silent past the hangover → open (caller has the floor)
+    b._residual = b""
+    b._last_agent_audio = now - 10
+    assert b._agent_is_speaking(now) is False
+
+
+def test_agent_is_speaking_off_when_disabled(monkeypatch):
+    monkeypatch.setenv("EO_HALF_DUPLEX", "false")
+    b = _bridge()
+    now = time.monotonic()
+    b._last_agent_audio = now                    # agent actively speaking...
+    assert b._agent_is_speaking(now) is False    # ...but half-duplex is off → never gate
+
+
 def test_missed_reply_rescue_caps_at_two_per_spell(monkeypatch):
     """A barge-in that flushed the agent's question used to make it re-ask the SAME
     full question over and over. The rescue now fires at most twice per unanswered

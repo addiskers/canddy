@@ -416,6 +416,14 @@ class PlivoMediaBridge:
             self._vad_ms_threshold = float(os.getenv("EO_VAD_RMS_THRESHOLD", "500")) ** 2
         except ValueError:
             self._vad_ms_threshold = 500.0 ** 2
+        # Half-duplex echo guard: while the agent is speaking, the caller's mic mostly
+        # carries echo of the agent's own voice. Forwarding it makes Gemini's VAD fire a
+        # false "interrupt" that cuts the agent mid-question. When on, we send silence to
+        # Gemini (and ignore the frame as caller activity) until the agent's audio has
+        # drained — so echo can never self-interrupt. Off = free barge-in (needs a line
+        # with hardware echo cancellation).
+        self._half_duplex = os.getenv("EO_HALF_DUPLEX", "true").strip().lower() not in ("0", "false", "no", "off")
+        self._half_duplex_hangover = _env_float("EO_HALF_DUPLEX_HANGOVER_MS", 300) / 1000.0
         # Call recording: mix caller + agent mulaw into one mono 8k PCM16 timeline, written to WAV at call end; guarded so a recording failure can never affect the live call.
         self._rec_on = os.getenv("EO_RECORD_CALLS", "true").strip().lower() not in ("0", "false", "no", "off")
         self._rec_t0 = None
@@ -641,6 +649,16 @@ class PlivoMediaBridge:
         except Exception as e:
             logger.error(f"Plivo outbound sender error: {e}")
 
+    def _agent_is_speaking(self, now):
+        """Half-duplex gate: True while the agent's audio is still going out to the caller
+        (queued/residual) or within the echo-tail hangover after it drained. Keyed on the
+        OUTBOUND path, never on caller energy — so it can't be fooled by echo. Used to drop
+        inbound echo frames before Gemini hears them."""
+        if not self._half_duplex:
+            return False
+        return (not self._out_frames.empty() or bool(self._residual)
+                or (now - self._last_agent_audio) < self._half_duplex_hangover)
+
     def _drain_outbound(self):
         self._residual.clear()
         n = 0
@@ -792,10 +810,15 @@ class PlivoMediaBridge:
                         # Real-time VAD: stamp caller activity on VOICED frames (long before transcription) so idle/hangup guards never fire mid-speech; energy-gated since Plivo streams ~20ms frames non-stop.
                         track = str(media.get("track") or "inbound").lower()
                         if track == "inbound":
-                            self._rec_add(mulaw_bytes)   # record the caller side (all frames)
+                            self._rec_add(mulaw_bytes)   # record the caller side (all frames — the WAV keeps true caller audio)
                             frame_ms = _mulaw_frame_meansquare(mulaw_bytes)
                             now_m = time.monotonic()
-                            if frame_ms >= self._vad_ms_threshold:
+                            # Half-duplex: while the agent is speaking, this frame is mostly echo
+                            # of the agent's own voice — don't count it as caller activity, and
+                            # feed Gemini SILENCE so echo can't fire a false interrupt that cuts
+                            # the agent's question.
+                            agent_speaking = self._agent_is_speaking(now_m)
+                            if not agent_speaking and frame_ms >= self._vad_ms_threshold:
                                 self._last_caller_audio = now_m
                                 self._last_activity = now_m
                                 # Caller is speaking now → the agent's next audio is a genuine reply, not forced-turn filler; clear the stray guard and the "agent spoke" signal.
@@ -805,7 +828,9 @@ class PlivoMediaBridge:
                                 self._silence_nudged = False
                                 self._silence_wrapup_at = 0.0
                                 self._reply_nudge_count = 0   # caller spoke → clear the re-ask cap for the next spell
-                            if self._gate_on:
+                            if agent_speaking:
+                                self._put_audio(_SILENCE_20MS_16K)
+                            elif self._gate_on:
                                 # SUBSTITUTE silence for below-gate frames (Gemini's VAD needs to HEAR the quiet); hysteresis + hangover so onsets/tails and inter-word gaps are never clipped.
                                 if frame_ms >= self._gate_thr or (
                                         frame_ms >= self._gate_thr_low
