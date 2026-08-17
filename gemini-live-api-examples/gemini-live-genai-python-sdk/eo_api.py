@@ -142,6 +142,7 @@ def _strip_full(call: dict, include_cost: bool = False) -> dict:
         if cid:
             c["campaign_name"] = _campaign_label(c, eo_db.campaign_meta([cid]))
         c["has_recording"] = store.has_recording(c.get("call_sid"))
+        c["rsvp_outcome_label"] = _rsvp_label(c.get("rsvp_outcome_status"))
         return c
     c = {k: v for k, v in call.items() if k not in _CALL_COST_KEYS}
     for k in ("cost", "pricing"):
@@ -156,6 +157,9 @@ def _strip_full(call: dict, include_cost: bool = False) -> dict:
     if cid:
         c["campaign_name"] = _campaign_label(c, eo_db.campaign_meta([cid]))
     c["has_recording"] = store.has_recording(c.get("call_sid"))
+    # Human outcome label so the drawer shows "Interview completed", not raw "yes"
+    # (the list endpoint already attaches this; the drawer reads /calls/{id}).
+    c["rsvp_outcome_label"] = _rsvp_label(c.get("rsvp_outcome_status"))
     return c
 
 
