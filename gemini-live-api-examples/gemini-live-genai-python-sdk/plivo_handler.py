@@ -109,6 +109,21 @@ _CLOSING_MARKERS = (
     "canny management की ओर से", "कैनी मैनेजमेंट की ओर से",
 )
 
+# Safety net for a known live-model rough edge: the model occasionally narrates a
+# function call's name/JSON into its own audio output instead of calling it silently
+# (e.g. "responsemark_question{gist:...,question_number:1,status:answered}..." was
+# heard on a real call). The prompt forbids this (see gemini_live.SYSTEM_INSTRUCTION,
+# "TOOLS ARE INVISIBLE"), but this is a second line of defense: cut playback the
+# instant it's detected, same mechanism as the closing-repeat guard below.
+_TOOL_LEAK_RE = re.compile(
+    r"\b(mark_question|record_interview|question_number|outcome_status|"
+    r"employee_confirmed_identity|questions_completed)\b|\{[a-z_]+\s*:", re.I)
+
+
+def _has_tool_leak(turn_text: str) -> bool:
+    return bool(_TOOL_LEAK_RE.search(turn_text or ""))
+
+
 # Agent turn that ended with a question — give the caller more thinking time before "are you still there?"
 _AGENT_QUESTION_RE = re.compile(
     r"[?]|\b(are you (still )?there|could you (tell|explain)|please explain|"
@@ -1110,6 +1125,10 @@ class PlivoMediaBridge:
                         if not self._suppress_turn and _has_closing_repeat(self._turn_text):
                             self._suppress_turn = True
                             logger.info("Repeated closing mid-turn; suppressing duplicate audio")
+                            await self._flush_playout()
+                        elif not self._suppress_turn and _has_tool_leak(self._turn_text):
+                            self._suppress_turn = True
+                            logger.warning("Tool-call syntax leaked into agent speech; suppressing audio")
                             await self._flush_playout()
                     elif etype in ("turn_complete", "interrupted"):
                         if etype == "turn_complete":

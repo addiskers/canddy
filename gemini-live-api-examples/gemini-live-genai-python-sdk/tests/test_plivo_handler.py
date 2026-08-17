@@ -9,8 +9,8 @@ import time
 import pytest
 
 import plivo_handler as ph
-from plivo_handler import (PlivoMediaBridge, _has_closing_repeat, _looks_like_agent_question,
-                           _looks_like_goodbye,
+from plivo_handler import (PlivoMediaBridge, _has_closing_repeat, _has_tool_leak,
+                           _looks_like_agent_question, _looks_like_goodbye,
                            _MULAW_DECODE, _MULAW_SQ, _PCM_TO_ULAW, _SILENCE_20MS_16K,
                            _mulaw_frame_meansquare, _pcm16_to_mulaw_sample, pcm24k_to_mulaw)
 
@@ -109,6 +109,23 @@ def test_has_closing_repeat_detects_doubled_closing():
         "thank you for your time. your answers will go to management. "
         "thank you for your time, goodbye."
     ) is True
+
+
+def test_has_tool_leak_catches_narrated_function_calls():
+    # Real production failure: the model narrated a mark_question call, JSON and
+    # all, into its own audio instead of calling it silently.
+    assert _has_tool_leak(
+        "responsemark_question{gist:States they stopped work because Canny "
+        "'eats money',question_number:1,status:answered}ઠિક છे. Canny પૈસા ખાય છે"
+    ) is True
+    assert _has_tool_leak("record_interview outcome_status yes") is True
+    assert _has_tool_leak("please give the question_number") is True
+    assert _has_tool_leak('{note: "left early"}') is True
+    # Normal speech, including the word "question", must never false-positive.
+    assert _has_tool_leak("ठीक है, आपकी बात नोट कर ली है। अगला सवाल है —") is False
+    assert _has_tool_leak("શું તમે સાંભળો છો?") is False
+    assert _has_tool_leak("") is False
+    assert _has_tool_leak(None) is False
 
 
 def test_looks_like_agent_question():
