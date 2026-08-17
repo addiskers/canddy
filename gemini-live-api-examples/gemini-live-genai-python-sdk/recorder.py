@@ -302,6 +302,21 @@ class CallRecorder:
             return
         if name == "record_interview" and isinstance(result, dict):
             status = result.get("outcome_status") or "callback"
+            try:
+                qc_claim = int(result.get("questions_completed") or 0)
+            except (TypeError, ValueError):
+                qc_claim = 0
+            # Safety net: a "completed" interview with ZERO questions actually asked
+            # (no mark_question fired, and the tool's own count is 0) is incoherent —
+            # e.g. the agent couldn't hear the caller and bailed to a close. Downgrade
+            # to "callback" so the call re-dials instead of being counted as done.
+            if status == "yes" and not (self.call.get("interview_progress") or {}) and qc_claim == 0:
+                logger.warning("record_interview 'yes' with 0 questions asked; downgrading to callback")
+                status = "callback"
+                note = (result.get("note") or "").strip()
+                result = dict(result)
+                result["outcome_status"] = "callback"
+                result["note"] = (note + " " if note else "") + "[auto: closed with 0 questions asked — downgraded to callback]"
             # Reuse the existing booking_created flag ("interview completed") so the admin dashboard keeps working.
             if status == "yes":
                 self.call["booking_created"] = True

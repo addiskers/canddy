@@ -57,9 +57,27 @@ def test_live_callback_still_schedules_a_callback_block():
 def test_yes_after_pending_callback_cancels_it():
     r = _rec_with_call()
     r.call["callback"] = {"status": "pending"}
-    r._record_tool(_interview_event(outcome_status="yes"))
+    r._record_tool(_interview_event(outcome_status="yes", questions_completed=10))
     assert r.call["callback"]["status"] == "cancelled"
     assert r.call["booking_created"] is True             # "interview completed" flag
+
+
+def test_yes_with_zero_questions_downgraded_to_callback():
+    # Safety net: the agent closed as "completed" but never asked anything
+    # (couldn't hear the caller). Must NOT count as a finished interview.
+    r = _rec_with_call()
+    r._record_tool(_interview_event(outcome_status="yes"))     # questions_completed defaults to 0, no mark_question
+    assert r.call["rsvp_outcome_status"] == "callback"
+    assert r.call["booking_created"] is False
+    assert "0 questions" in r.call["rsvp_note"]
+
+
+def test_yes_with_marked_questions_stays_yes():
+    r = _rec_with_call()
+    r._record_tool(_mark_event(1, gist="explained the morning"))
+    r._record_tool(_interview_event(outcome_status="yes"))     # progress exists → legitimate completion
+    assert r.call["rsvp_outcome_status"] == "yes"
+    assert r.call["booking_created"] is True
 
 
 def test_interview_fields_and_note_are_persisted():
