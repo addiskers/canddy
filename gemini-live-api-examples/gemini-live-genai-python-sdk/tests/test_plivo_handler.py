@@ -578,8 +578,10 @@ def test_agent_is_speaking_half_duplex_gate(monkeypatch):
     b._out_frames.put_nowait(b"x")
     assert b._agent_is_speaking(now) is True
     b._out_frames.get_nowait()
-    # queue empty + agent silent past the hangover → open (caller has the floor)
-    b._residual = b""
+    # queue empty + agent silent past the hangover → OPEN, even though _residual holds a
+    # leftover partial frame. Keying on _residual pinned the gate True forever and made the
+    # agent deaf mid-call — this asserts it doesn't.
+    b._residual = bytearray(b"\x00\x11\x22")
     b._last_agent_audio = now - 10
     assert b._agent_is_speaking(now) is False
 

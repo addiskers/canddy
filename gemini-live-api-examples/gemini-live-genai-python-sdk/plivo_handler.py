@@ -423,7 +423,10 @@ class PlivoMediaBridge:
         # drained — so echo can never self-interrupt. Off = free barge-in (needs a line
         # with hardware echo cancellation).
         self._half_duplex = os.getenv("EO_HALF_DUPLEX", "true").strip().lower() not in ("0", "false", "no", "off")
-        self._half_duplex_hangover = _env_float("EO_HALF_DUPLEX_HANGOVER_MS", 300) / 1000.0
+        self._half_duplex_hangover = _env_float("EO_HALF_DUPLEX_HANGOVER_MS", 150) / 1000.0
+        # During agent speech, only frames LOUDER than this (energy domain) count as the
+        # real caller (a genuine answer / barge-in); quieter frames are echo → silence.
+        self._half_duplex_pass_thr = _env_float("EO_HALF_DUPLEX_PASS_RMS", 1400) ** 2
         # Call recording: mix caller + agent mulaw into one mono 8k PCM16 timeline, written to WAV at call end; guarded so a recording failure can never affect the live call.
         self._rec_on = os.getenv("EO_RECORD_CALLS", "true").strip().lower() not in ("0", "false", "no", "off")
         self._rec_t0 = None
@@ -650,13 +653,15 @@ class PlivoMediaBridge:
             logger.error(f"Plivo outbound sender error: {e}")
 
     def _agent_is_speaking(self, now):
-        """Half-duplex gate: True while the agent's audio is still going out to the caller
-        (queued/residual) or within the echo-tail hangover after it drained. Keyed on the
-        OUTBOUND path, never on caller energy — so it can't be fooled by echo. Used to drop
-        inbound echo frames before Gemini hears them."""
+        """Half-duplex gate: True while the agent's audio is actively going out to the
+        caller (outbound QUEUE non-empty) or within the echo-tail hangover after the last
+        played frame. Keyed on the outbound path, never on caller energy — so it can't be
+        fooled by echo. NOTE: do NOT key on self._residual — it holds leftover partial-frame
+        bytes that linger after a turn and would pin the gate True forever (the agent would
+        go deaf to the caller for the rest of the call)."""
         if not self._half_duplex:
             return False
-        return (not self._out_frames.empty() or bool(self._residual)
+        return (not self._out_frames.empty()
                 or (now - self._last_agent_audio) < self._half_duplex_hangover)
 
     def _drain_outbound(self):
@@ -813,11 +818,13 @@ class PlivoMediaBridge:
                             self._rec_add(mulaw_bytes)   # record the caller side (all frames — the WAV keeps true caller audio)
                             frame_ms = _mulaw_frame_meansquare(mulaw_bytes)
                             now_m = time.monotonic()
-                            # Half-duplex: while the agent is speaking, this frame is mostly echo
-                            # of the agent's own voice — don't count it as caller activity, and
-                            # feed Gemini SILENCE so echo can't fire a false interrupt that cuts
-                            # the agent's question.
-                            agent_speaking = self._agent_is_speaking(now_m)
+                            # Half-duplex: while the agent is speaking, a QUIET inbound frame is
+                            # mostly echo of the agent's own voice — feed Gemini SILENCE so echo
+                            # can't fire a false interrupt. But a LOUD frame is a real answer /
+                            # genuine barge-in — let it through so the caller is never unheard
+                            # (even if they answer over a long agent turn like the consent line).
+                            agent_speaking = (self._agent_is_speaking(now_m)
+                                              and frame_ms < self._half_duplex_pass_thr)
                             if not agent_speaking and frame_ms >= self._vad_ms_threshold:
                                 self._last_caller_audio = now_m
                                 self._last_activity = now_m
