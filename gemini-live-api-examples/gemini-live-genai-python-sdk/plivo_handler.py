@@ -396,6 +396,7 @@ class PlivoMediaBridge:
         self._greeting_sent_at = 0.0             # when the opening trigger was queued (0 = not yet)
         self._greeting_nudged = False            # the speak-NOW watchdog push was already sent
         self._reply_nudged = False               # missed-reply rescue sent for the current unanswered spell
+        self._reply_nudge_count = 0              # reply rescues this spell (cap: avoid re-asking the same question 3x)
         self._any_turn_complete = False          # a model turn fully completed at least once this call
         self._greeting_rescued = False           # once-per-call: opening re-sent after a pre-speech interrupt
         # After an RSVP re-ask / question, give the caller more thinking time before the silence nudge.
@@ -803,6 +804,7 @@ class PlivoMediaBridge:
                                 self._did_suppress_audio = False
                                 self._silence_nudged = False
                                 self._silence_wrapup_at = 0.0
+                                self._reply_nudge_count = 0   # caller spoke → clear the re-ask cap for the next spell
                             if self._gate_on:
                                 # SUBSTITUTE silence for below-gate frames (Gemini's VAD needs to HEAR the quiet); hysteresis + hangover so onsets/tails and inter-word gaps are never clipped.
                                 if frame_ms >= self._gate_thr or (
@@ -980,17 +982,28 @@ class PlivoMediaBridge:
                 if nudge_on and not self._rsvp_recorded and self._agent_audio_started \
                         and not self._ending and agent_quiet:
                     # Missed-reply rescue: Gemini sometimes never registers a caller reply as a turn. Measure the AGENT's silence, not the caller's — an ignored caller repeating "hello?" would reset a caller-keyed timer forever.
-                    if (not self._reply_nudged
+                    # Cap at 2 per unanswered spell (count resets only on genuine caller voice): a
+                    # barge-in that flushed the agent's question used to trigger an endless re-ask of
+                    # the SAME full question (heard as "asked 3 times"). First nudge = short re-ask
+                    # only; second = a bare "can you hear me"; then stop and let the silence ladder run.
+                    if (not self._reply_nudged and self._reply_nudge_count < 2
                             and self._last_caller_audio > self._last_agent_audio
                             and now - self._last_agent_audio >= reply_rescue_s):
                         self._reply_nudged = True
+                        self._reply_nudge_count += 1
                         logger.info(f"Agent silent {now - self._last_agent_audio:.0f}s since the "
-                                    f"caller spoke; prompting it to reply")
-                        await self.text_input_queue.put(
-                            "[The employee just said something and is waiting. If you caught it, "
-                            "reply NOW; if you did not catch it, politely ask them to repeat. "
-                            "ONE short line only — never re-deliver something you already said; "
-                            "if a question of yours is still unanswered, just re-ask it briefly.]")
+                                    f"caller spoke; prompting it to reply "
+                                    f"({self._reply_nudge_count}/2)")
+                        if self._reply_nudge_count == 1:
+                            await self.text_input_queue.put(
+                                "[The employee may not have heard your last line (the audio can cut out). "
+                                "In ONE short line, ask only 'ठीक है, क्या आप सुन रहे हैं?' or the SHORT core "
+                                "of your pending question — do NOT repeat the full sentence you just said, "
+                                "and do NOT move to the next question yet. Then wait.]")
+                        else:
+                            await self.text_input_queue.put(
+                                "[Still no reply. Ask ONLY ONE short line — 'क्या आप मेरी आवाज़ सुन पा रहे हैं?' "
+                                "— then wait silently. Do not repeat your question.]")
                         continue
                     quiet_for = now - max(self._last_caller_audio, self._last_agent_audio,
                                           self._last_activity)

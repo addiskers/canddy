@@ -445,7 +445,7 @@ def test_missed_reply_rescue_fires_when_caller_speech_goes_unanswered(monkeypatc
         msgs = []
         while not b.text_input_queue.empty():
             msgs.append(b.text_input_queue.get_nowait())
-        return [m for m in msgs if "said something" in m]
+        return [m for m in msgs if "may not have heard" in m]
 
     assert len(asyncio.run(run())) == 1
 
@@ -473,7 +473,7 @@ def test_missed_reply_rescue_fires_while_caller_keeps_talking(monkeypatch):
         msgs = []
         while not b.text_input_queue.empty():
             msgs.append(b.text_input_queue.get_nowait())
-        return [m for m in msgs if "said something" in m]
+        return [m for m in msgs if "may not have heard" in m]
 
     assert len(asyncio.run(run())) == 1
 
@@ -498,7 +498,7 @@ def test_missed_reply_rescue_stays_quiet_when_agent_already_replied(monkeypatch)
         msgs = []
         while not b.text_input_queue.empty():
             msgs.append(b.text_input_queue.get_nowait())
-        return [m for m in msgs if "said something" in m]
+        return [m for m in msgs if "may not have heard" in m]
 
     assert asyncio.run(run()) == []
 
@@ -562,6 +562,44 @@ def test_silence_nudge_respects_cooldown_after_noise_reset(monkeypatch):
         return [m for m in msgs if "सुन रहे हैं" in m]
 
     assert asyncio.run(run()) == []                   # cooldown blocks the re-ask
+
+
+def test_missed_reply_rescue_caps_at_two_per_spell(monkeypatch):
+    """A barge-in that flushed the agent's question used to make it re-ask the SAME
+    full question over and over. The rescue now fires at most twice per unanswered
+    spell (short re-ask, then 'can you hear me'), and only resets on real caller voice."""
+    monkeypatch.setenv("EO_SILENCE_CHECK", "true")
+    monkeypatch.setenv("EO_UNANSWERED_REPLY_SECONDS", "0.2")
+    monkeypatch.setenv("EO_SILENCE_PROMPT_SECONDS", "999")   # keep the "still there?" ladder out of the way
+
+    async def run():
+        b = _bridge()
+        b._agent_audio_started = True
+        fires = 0
+        # Simulate: caller spoke, agent then went quiet; each rescue "reply" re-arms
+        # _reply_nudged (as real agent audio does) but must NOT reset the per-spell count.
+        for _ in range(5):
+            t = time.monotonic()
+            b._turn_open = False
+            b._last_caller_audio = t - 5          # caller spoke...
+            b._last_agent_audio = t - 5 - 1       # ...after the agent's last audio → rescue-eligible
+            b._last_activity = t - 5
+            b._reply_nudged = False               # agent replied to the previous nudge → re-armed
+            task = asyncio.create_task(b._idle_hangup_guard())
+            await asyncio.sleep(1.3)               # the guard sleeps 1.0s at the top of each tick
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            if b._pending_hangup_task:
+                b._pending_hangup_task.cancel()
+            while not b.text_input_queue.empty():
+                m = b.text_input_queue.get_nowait()
+                if "सुन" in m:
+                    fires += 1
+        return fires, b._reply_nudge_count
+
+    fires, count = asyncio.run(run())
+    assert fires == 2                              # capped: not 3, 4, 5...
+    assert count == 2
 
 
 # Post-record arming: ONLY the outcome tool arms end-of-call logic
