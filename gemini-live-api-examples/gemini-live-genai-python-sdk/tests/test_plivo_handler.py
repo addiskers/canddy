@@ -586,6 +586,41 @@ def test_agent_is_speaking_half_duplex_gate(monkeypatch):
     assert b._agent_is_speaking(now) is False
 
 
+def test_interrupt_not_flushed_while_agent_speaking(monkeypatch):
+    """Half-duplex: an interrupt that arrives while the agent's audio is still going out
+    is echo of the agent's own voice — it must NOT flush the agent's question."""
+    monkeypatch.setenv("EO_HALF_DUPLEX", "true")
+
+    async def run():
+        ws = FakeWS()
+        b = _bridge(ws)
+        b.stream_id = "s1"
+        b._out_frames.put_nowait(b"frame")       # agent actively speaking
+        b._last_caller_audio = time.monotonic()  # would satisfy the confirm window
+        await b.audio_interrupt_callback()
+        return b._out_frames.qsize(), [m for m in ws.sent if m.get("event") == "clearAudio"]
+
+    qsize, clears = asyncio.run(run())
+    assert qsize == 1        # the agent's queued question was NOT flushed
+    assert clears == []      # no clearAudio sent to Plivo
+
+
+def test_interrupt_flushed_when_agent_idle_and_caller_voiced(monkeypatch):
+    """A genuine barge-in — the agent is idle and the caller voiced recently — still flushes."""
+    monkeypatch.setenv("EO_HALF_DUPLEX", "true")
+
+    async def run():
+        ws = FakeWS()
+        b = _bridge(ws)
+        b.stream_id = "s1"
+        b._last_agent_audio = time.monotonic() - 10   # agent silent → not speaking
+        b._last_caller_audio = time.monotonic()       # caller voiced now
+        await b.audio_interrupt_callback()
+        return [m for m in ws.sent if m.get("event") == "clearAudio"]
+
+    assert len(asyncio.run(run())) == 1               # flush happened
+
+
 def test_agent_is_speaking_off_when_disabled(monkeypatch):
     monkeypatch.setenv("EO_HALF_DUPLEX", "false")
     b = _bridge()

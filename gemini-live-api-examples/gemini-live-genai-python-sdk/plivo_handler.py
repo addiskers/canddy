@@ -697,6 +697,12 @@ class PlivoMediaBridge:
         model then restarts its sentence (heard as a doubled line)."""
         if not self.stream_id:
             return
+        # Half-duplex: while the agent's own audio is still going out, an interrupt is
+        # almost always echo of that audio looping back — never flush the agent's own
+        # question mid-speech. A genuine interrupt is honored once its audio has drained.
+        if self._half_duplex and self._agent_is_speaking(time.monotonic()):
+            logger.info("Ignoring interrupt while agent is speaking (half-duplex) — likely echo")
+            return
         confirm_s = _env_float("EO_INTERRUPT_CONFIRM_WINDOW_S", 0.4)
         if confirm_s > 0 and (time.monotonic() - self._last_caller_audio) > confirm_s:
             logger.info("Ignoring Gemini interrupt: no voiced caller audio in the last "
